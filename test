@@ -1,0 +1,279 @@
+["             "]
+title = "自定义代码 [C]"
+description = "代码: ${Jass代码}"
+comment = "输入一行Jass代码"
+category = TC_NOTHING
+returns = buffcode
+[[.args]]
+type = scriptcode
+
+[MonsterPool_GetMonsterFromPool]
+title = "从怪物池中获取怪物"
+description = "从指定ID的怪物池中获取指定类型的怪物 "
+category = TC_FRO
+returns = unitcode
+[[.args]]
+type = integer
+[[.args]]
+type = integer
+
+[MonsterPool_CreateMonsterPool]
+title = "创建怪物池"
+description = "创建一个怪物池，允许难度下限为：${min}，允许难度上限为：${max} "
+category = TC_FRO
+returns = integer
+[[.args]]
+type = integer
+[[.args]]
+type = integer
+
+[MonsterPool_GetMonsterPoolByDifficulty]
+title = "根据难度获取怪物池(随机)"
+description = "根据指定难度获取对应的怪物池 "
+category = TC_FRO
+returns = integer
+[[.args]]
+type = integer
+
+[NNCoufind]
+title = "获得指定字符串第一次出现的位置（NNCOU)"
+description = "在 ${被查找的字符串} 中找寻字符串 ${字符} 第一次出现的位置，并返回，没有则返回-1"
+category = TC_NNCOU
+returns = integer
+[[.args]]
+type = string
+[[.args]]
+type = string
+
+[NNCouGetLastIndex]
+title = "获得指定字符串最后一次出现的位置（NNCOU)"
+description = "在 ${被查找的字符串} 中找寻字符串 ${字符} 最后一次出现的位置，并返回，没有则返回-1"
+category = TC_NNCOU
+returns = integer
+[[.args]]
+type = string
+[[.args]]
+type = string
+
+[NNCouSplit]
+title = "分割字符串（NNCOU)"
+description = "分割 ${被分割的字符串} ，分割字符 ${字符} ，并储存在 ${储存位置} 所在的哈希表中，返回分割出的字符个数(1~N)"
+category = TC_NNCOU
+returns = integer
+[[.args]]
+type = string
+[[.args]]
+type = string
+[[.args]]
+type = string
+
+[NNCouLoadSpiltString]
+title = "获得分割字符串所分割的字符串（NNCOU)"
+description = "获取在 ${储存位置} 上绑定第 ${X} 个字符串"
+category = TC_NNCOU
+returns = string
+[[.args]]
+type = string
+[[.args]]
+type = integer
+min = 0
+
+[NNCouIsWalkAble]
+title = "获得xy是否可通行"
+description = "获取坐标 (${X},${Y}) 上的通行状态"
+category = TC_NNCOU
+comment = ""
+returns = boolean
+[[.args]]
+type = real
+default = "0"
+[[.args]]
+type = real
+default = "0"
+
+[NNCouGetZByXY]
+title = "获取点的Z轴高度(坐标)"
+description = "获取点 (${X},${Y}) 上的Z轴高度"
+category = TC_NNCOU
+comment = ""
+returns = real
+[[.args]]
+type = real
+default = "0"
+[[.args]]
+type = real
+default = "0"
+
+[CalculateChargeAdjustment]
+title = "获取单位的角度差"
+description = "获取(${单位})的(${角度})与(${另外一个单位})的夹角的角度差"
+category = TC_NNCOU
+comment = ""
+returns = degree
+[[.args]]
+type = unit
+default = "GetTriggerUnit"
+[[.args]]
+type = degree
+default = "0"
+[[.args]]
+type = unit
+default = "GetSpellTargetUnit"
+
+[IsUnitInShanXing]
+title = "单位是否在扇形区域内"
+description = "获取(${单位})是否在以( ${x} ,${y} )向( ${角度} )射出，夹角为 ${角度}的扇形内"
+category = TC_NNCOU
+comment = ""
+returns = boolean
+[[.args]]
+type = unit
+default = "GetEnumUnit"
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = degree
+[[.args]]
+type = degree
+
+[NNCouIsUnitCC]
+title = "单位持有特定控制类型的BUFF"
+description = "${单位}拥有 ${类型} 类的控制BUFF"
+category = TC_NNCOU
+comment = "需要先将指定BUF添加进列表"
+returns = boolean
+[[.args]]
+type = unit
+default = "GetTriggerUnit"
+[[.args]]
+type = bufCCType
+default = "bufCCTypeA"
+
+[NNCouWarningRect]
+title = "【预警圈】创建方形预警圈"
+description = "在( ${x},${y} )创建方形预警圈，面向 ${degree} 度，长 ${length} ，宽 ${width} ，持续时间：${time}"
+comment = "需要设置模型路径，使用模型长宽为380/90。会返回特效，可通过返回值手动调整长宽和持续时间等属性"
+category = TC_NNCOU
+returns = effect
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = degree
+[[.args]]
+type = real
+default = 380.0
+[[.args]]
+type = real
+default = 90.0
+[[.args]]
+type = real
+default = 1.0
+
+[NNCouWarningRange]
+title = "【预警】创建圆形预警圈"
+description = "在( ${x},${y} )创建半径为 ${redius} 的圆形预警圈，持续 ${time} 秒"
+comment = "需要设置模型路径，使用模型半径为192。会返回特效，可通过返回值手动调整大小和持续时间等属性"
+category = TC_NNCOU
+returns = effect
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+default = 192.0
+[[.args]]
+type = real
+default = 1.0
+
+[NNCouCureUnit]
+title = "【治疗】治愈单位（NNCOU)"
+description = "让${治疗提供者}治疗${被治疗目标} ，数值为${实数}"
+category = TC_NNCOU
+comment = "治疗提供者的治疗效率与被施术者的被疗效果（逆天自定义值）都将影响造成治疗的数值，乘法叠加"
+returns = real
+[[.args]]
+type = unit
+default = "GetTriggerUnit"
+[[.args]]
+type = unit
+default = "GetSpellTargetUnit"
+[[.args]]
+type = real
+
+[NNCou_EnumRectUnitByXY]
+title = "选取矩形内的单位为单位组（起点和中心点）"
+description = "构造以(${x0},${y0})为起点，以(${x1},${y1})为矩形中心，长${长度}，宽${宽度}的矩形，并选取内部单位为单位组"
+category = TC_NNCOU
+comment = "会创造单位组"
+returns = group
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+
+[NNCou_EnumRectUnitByCenterAngle]
+title = "选取矩形内的单位为单位组（以矩形中心构造）"
+description = "构造以(${x0},${y0})为矩形中心，角度${角度}，长${长度}，宽${宽度}的矩形，并选取内部单位为单位组"
+category = TC_NNCOU
+comment = "会创造单位组"
+returns = group
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = degree
+[[.args]]
+type = real
+[[.args]]
+type = real
+
+[NNCou_EnumRectUnitByBeginAngle]
+title = "选取矩形内的单位为单位组（以矩形起点构造）"
+description = "构造以(${x0},${y0})为矩形起点，角度${角度}，长${长度}，宽${宽度}的矩形，并选取内部单位为单位组"
+category = TC_NNCOU
+comment = "会创造单位组"
+returns = group
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = degree
+[[.args]]
+type = real
+[[.args]]
+type = real
+
+[MaxSpeed_GetUnitMoveSpeedEx]
+title = "获取单位当前移动速度(NNWE)"
+description = "获取 ${单位} 当前移动速度。"
+comment = "区别于原有函数，启用移速系统后能获取超过522的移速。"
+category = TC_UNIT
+returns = real
+[[.args]]
+type = unit
+default = "GetTriggerUnit"
+
+[DmgSyc_CompareDamageType]
+title = "伤害类型对比【伤害系统】"
+description = "单位所受伤害的类型是 ${伤害类型} "
+comment = "仅能通过nncou使用，"
+category = TC_NNCOU
+returns = boolean
+[[.args]]
+type = NNCdamageType
+default = "damageTypeB"

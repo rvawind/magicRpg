@@ -1,0 +1,25 @@
+
+[BossChargeSys_GetCallbackBossUnit]
+title = "[冲锋系统]获取回调中的冲锋单位"
+description = "在段完成回调或序列完成回调中，获取正在冲锋的单位。Effect冲锋时返回空"
+category = TC_NNCCS
+returns = unit
+
+[BossChargeSys_GetCallbackBossEffect]
+title = "[冲锋系统]获取回调中的冲锋Effect"
+description = "在段完成回调或序列完成回调中，获取正在冲锋的Effect。单位冲锋时返回空"
+category = TC_NNCCS
+returns = effect
+
+[BossChargeSys_GetCallbackTargetUnit]
+title = "[冲锋系统]获取回调中的目标单位"
+description = "在段完成回调或序列完成回调中，获取本次冲锋的目标单位"
+category = TC_NNCCS
+returns = unit
+
+[BossChargeSys_GetCallbackSegmentIndex]
+title = "[冲锋系统]获取回调中的段序号"
+description = "在段完成回调(onSegDone)中，返回刚完成的是第几段（从1开始）。不在回调中返回-1"
+comment = "仅在 onSegDone 回调中有效"
+category = TC_NNCCS
+returns = integer

@@ -1,0 +1,25 @@
+[TriggerCategories]
+TC_NNCCS=[NNC冲锋系统],ReplaceableTextures\CommandButtons\BTNWindWalkOn.blp
+
+[TriggerParams]
+// --- easingType 缓动类型选项 ---
+easingTypeLinear=0,easingType,0,匀速
+easingTypeSmoothstep=0,easingType,1,平滑
+easingTypeEaseIn=0,easingType,2,渐快
+easingTypeEaseOut=0,easingType,3,渐慢
+easingTypeEaseSharp=0,easingType,4,急刹
+
+// --- arcDirection 弧方向选项 ---
+arcDirectionCW=0,arcDirection,1,顺时针/左弧
+arcDirectionCCW=0,arcDirection,-1,逆时针/右弧
+arcDirectionRandom=0,arcDirection,2,随机左右交替
+
+// --- 逆天局部变量类型(Segment=序列句柄, SegHandle=段句柄) ---
+typename01_Segment=0,typename,200,冲锋序列
+typename01_SegHandle=0,typename,201,冲锋段
+
+[TriggerTypes]
+easingType=0,0,0,缓动类型,integer
+arcDirection=0,0,0,弧方向,integer
+Segment=0,0,0,冲锋序列,integer
+SegHandle=0,0,0,冲锋段,integer

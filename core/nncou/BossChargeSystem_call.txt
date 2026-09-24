@@ -1,0 +1,282 @@
+
+[BossChargeSystem_BossChargeIsCharging]
+title = "[冲锋系统]Boss是否正在冲锋"
+description = "检查${Boss单位}是否正在执行冲锋"
+category = TC_NNCCS
+returns = boolean
+[[.args]]
+type = unit
+default = GetTriggerUnit
+
+[BossChargeSystem_BossChargeGetPriority]
+title = "[冲锋系统]获取当前冲锋优先级"
+description = "获取${Boss单位}当前冲锋的优先级，未冲锋返回-1"
+category = TC_NNCCS
+returns = integer
+[[.args]]
+type = unit
+default = GetTriggerUnit
+
+[BossChargeSys_CreateSegmentLine]
+title = "[冲锋系统]创建直线冲锋段-冲向目标"
+description = "向执行时的目标单位直线冲锋，距离${总距离}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "最基础的直线冲锋，Boss到目标。建议距离200~800码，时长0.3~1.5秒"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+default = 500.0
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentLineForward]
+title = "[冲锋系统]创建直线冲锋段-面朝方向"
+description = "向Boss面朝方向直线冲锋，距离${总距离}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "无视目标位置，向Boss当前面朝方向冲锋"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+default = 500.0
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentLineToPoint]
+title = "[冲锋系统]创建直线冲锋段-冲向坐标"
+description = "向固定坐标(${目标X},${目标Y})直线冲锋，距离${总距离}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "冲锋到预设坐标。X/Y必须填写有效世界坐标"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+default = 500.0
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentArc]
+title = "[冲锋系统]创建环绕弧线段-绕目标"
+description = "以执行时的目标单位为圆心环绕，扫描${总角度}度，半径${初始半径}（变化量${半径增量}），方向${弧方向}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "绕目标单位环绕。典型：半圈=180度/半径400/无增量，螺旋靠近=半径增量-200"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = degree
+default = 180.0
+[[.args]]
+type = real
+default = 400.0
+[[.args]]
+type = real
+default = 0.0
+[[.args]]
+type = arcDirection
+default = arcDirectionCW
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentArcAroundPoint]
+title = "[冲锋系统]创建环绕弧线段-绕坐标"
+description = "以固定坐标(${圆心X},${圆心Y})为圆心环绕，扫描${总角度}度，半径${初始半径}（变化量${半径增量}），方向${弧方向}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "绕固定坐标环绕。圆心X/Y必须填写有效世界坐标"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = degree
+default = 180.0
+[[.args]]
+type = real
+default = 400.0
+[[.args]]
+type = real
+default = 0.0
+[[.args]]
+type = arcDirection
+default = arcDirectionCW
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentCurve]
+title = "[冲锋系统]创建贝塞尔弧线段-冲向目标"
+description = "以执行时的目标单位为终点，弧高${弧高}，弧峰位置${峰位比率}，不对称度${不对称度}，弧向${弧方向}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "贝塞尔弧线冲锋。峰位0.5=对称弧，不对称度0=两侧等高，弧高越大弧越弯"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+default = 200.0
+[[.args]]
+type = real
+default = 0.5
+[[.args]]
+type = real
+default = 0.0
+[[.args]]
+type = arcDirection
+default = arcDirectionCW
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentRebound]
+title = "[冲锋系统]创建折返冲锋段-冲向目标"
+description = "以执行时的目标单位为终点，冲出倍率${倍率}，侧偏角${侧偏角度}，回弹锐度${锐度}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "冲出并折返。倍率>1越过目标后折返(1.5过半折返)，锐度越大折返越急"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+default = 1.5
+[[.args]]
+type = degree
+default = 0.0
+[[.args]]
+type = real
+default = 1.5
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSequence]
+title = "[冲锋系统]创建冲锋序列"
+description = "创建一个空的冲锋序列，最多容纳8段，返回序列句柄"
+category = TC_NNCCS
+returns = Segment
+
+[BossChargeSys_CreateSegmentArcAroundMid]
+title = "[冲锋系统]创建环绕弧线段-绕中点"
+description = "以Boss到目标单位的中点为圆心环绕，扫描${总角度}度，半径${初始半径}（变化量${半径增量}），方向${弧方向}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "绕Boss→目标中点环绕。典型配置：半圈=180度/半径400/无增量"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = degree
+default = 180.0
+[[.args]]
+type = real
+default = 400.0
+[[.args]]
+type = real
+default = 0.0
+[[.args]]
+type = arcDirection
+default = arcDirectionCW
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentCurveToPoint]
+title = "[冲锋系统]创建贝塞尔弧线段-冲向坐标"
+description = "以固定坐标(${目标X},${目标Y})为终点，弧高${弧高}，弧峰位置${峰位比率}，不对称度${不对称度}，弧向${弧方向}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "贝塞尔弧线冲锋到固定坐标。峰位0.5=对称弧"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+default = 200.0
+[[.args]]
+type = real
+default = 0.5
+[[.args]]
+type = real
+default = 0.0
+[[.args]]
+type = arcDirection
+default = arcDirectionCW
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_CreateSegmentReboundToPoint]
+title = "[冲锋系统]创建折返冲锋段-冲向坐标"
+description = "以固定坐标(${目标X},${目标Y})为终点，冲出倍率${倍率}，侧偏角${侧偏角度}，回弹锐度${锐度}，持续${时长}秒，缓动${缓动类型}，返回段句柄"
+comment = "折返冲锋到固定坐标"
+category = TC_NNCCS
+returns = SegHandle
+[[.args]]
+type = real
+[[.args]]
+type = real
+[[.args]]
+type = real
+default = 1.5
+[[.args]]
+type = degree
+default = 0.0
+[[.args]]
+type = real
+default = 1.5
+[[.args]]
+type = real
+default = 0.6
+[[.args]]
+type = easingType
+default = easingTypeSmoothstep
+
+[BossChargeSys_GetCallbackBossUnit]
+title = "[冲锋系统]获取回调中的冲锋单位"
+description = "在段完成回调或序列完成回调中，获取正在冲锋的单位。Effect冲锋时返回空"
+category = TC_NNCCS
+returns = unit
+
+[BossChargeSys_GetCallbackBossEffect]
+title = "[冲锋系统]获取回调中的冲锋Effect"
+description = "在段完成回调或序列完成回调中，获取正在冲锋的Effect。单位冲锋时返回空"
+category = TC_NNCCS
+returns = effect
+
+[BossChargeSys_GetCallbackTargetUnit]
+title = "[冲锋系统]获取回调中的目标单位"
+description = "在段完成回调或序列完成回调中，获取本次冲锋的目标单位"
+category = TC_NNCCS
+returns = unit
+
+[BossChargeSys_GetCallbackSegmentIndex]
+title = "[冲锋系统]获取回调中的段序号"
+description = "在段完成回调(onSegDone)中，返回刚完成的是第几段（从1开始）。不在回调中返回-1"
+comment = "仅在 onSegDone 回调中有效，返回1-based段序号"
+category = TC_NNCCS
+returns = integer

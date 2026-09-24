@@ -1,0 +1,17 @@
+
+[BossChargeSys_SequenceExecuteEffect]
+title = "[冲锋系统]执行冲锋序列(Effect载体)"
+description = "让${特效}以${面向单位}的朝向为参考，对${目标单位}按${序列句柄}配置执行冲锋，优先级${优先级}。Effect不受地形阻挡"
+comment = "Effect冲锋跳过地形检测和死亡检查，适合弹幕/投射物类效果"
+category = TC_NNCCS
+[[.args]]
+type = Segment
+[[.args]]
+type = effect
+[[.args]]
+type = unit
+[[.args]]
+type = unit
+[[.args]]
+type = integer
+default = 5
