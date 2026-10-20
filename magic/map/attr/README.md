@@ -7,7 +7,7 @@
 
 ```
 python -I tools/ini2baseitem.py           # attr.csv -> attr.lua（同时重建装备表）
-python -I tools/ini2baseitem.py export    # item.ini -> CSV（仅初始化）
+python -I tools/ini2baseitem.py export --ini <w3x2lni导出的item.ini>    # item.ini -> CSV（仅初始化）
 ```
 
 ## 列

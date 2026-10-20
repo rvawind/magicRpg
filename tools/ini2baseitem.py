@@ -17,12 +17,11 @@
 属性注册表不属于任何一个装备包：装备、肉鸽奖励、诅咒等系统都引用同一份。
 删除一对 <pack>.csv / <pack>.text.csv 就是删除一个装备包。
 
-初始化时可以从 lni 导出一遍 CSV：
+初始化时可以从 w3x2lni 导出的 item.ini 导出一遍 CSV：
 
-  python tools/ini2baseitem.py export [--force]
+  python tools/ini2baseitem.py export --ini <item.ini> [--force]
 
-只读 item.ini。技能不参与：ability.ini 里的 139 个动态技能是 attr.j
-在编译期用 slk 库生成的产物，其余 172 个是普通物编技能。
+只读 item.ini。技能不参与：139 个动态技能由 attr.j 在编译期用 slk 库生成。
 
 属性行解析原则（仅导出时使用）：
   - 只提取「标签 + 数值」这种无歧义的行（可带 %）。
@@ -42,7 +41,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 
-DEFAULT_INI = ROOT / "core" / "nncou" / "lni" / "item.ini"
 DEFAULT_OUT_DIR = ROOT / "magic" / "map" / "equip" / "baseItem"
 DEFAULT_TABLE_DIR = DEFAULT_OUT_DIR / "table"
 # 属性注册表是地图级的，不属于任何一个装备包。
@@ -190,7 +188,7 @@ PERCENT_KEY_VARIANTS = {
     "manaRegen": "manaRegenPercent",
 }
 
-# 属性值在 JASS 里的存取类型，逐个对照 core/nncou/lua/attr.j：
+# 属性值在 JASS 里的存取类型，逐个对照地图内的 attr.j：
 #   integer -> SaveInteger / LoadInteger
 #   real    -> SaveReal / LoadReal
 # 这是写入地图数据时的类型，与 percent 无关：百分比也是先按数值存，由消费方解释。
@@ -1513,7 +1511,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="baseItem：CSV 表格 -> Lua")
     parser.add_argument("command", nargs="?", default="build", choices=["build", "export"],
                         help="build=读 CSV 生成 Lua（默认），export=从 item.ini 初始化 CSV")
-    parser.add_argument("--ini", default=str(DEFAULT_INI), help="export 的输入 item.ini")
+    parser.add_argument("--ini", default=None,
+                        help="export 的输入 item.ini（export 时必填）")
     parser.add_argument("--table-dir", default=str(DEFAULT_TABLE_DIR), help="装备 CSV 目录")
     parser.add_argument("--attr-dir", default=str(DEFAULT_ATTR_DIR), help="属性注册表目录")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Lua 输出目录")
@@ -1522,6 +1521,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "export":
+        if not args.ini:
+            print("export 需要 --ini 指定 w3x2lni 导出的 item.ini", file=sys.stderr)
+            return 2
         return cmd_export(args)
     return cmd_build(args)
 

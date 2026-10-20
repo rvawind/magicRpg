@@ -26,9 +26,7 @@
 - `NNCouInterface.j`、`NNCouString.j` 等基础接口；
 - `DmgSyc.j`、`NNCouWarning.j`、`NNCouCureSystem.j`、`NNCouPushSystem.j` 等通用系统；
 - `NNCouPoint.j`、`NNCouMath.j`：接口依赖，本仓库未收录，仍在 KKWE 的 `jass/nncou/` 中；
-- `BossChargeSystem.j` / `BossChargeSystemInterface.*`：BOSS 冲锋轨迹的公用能力（GUI 友好参数；同步后归入 `nncou/BossChargeSystem/`）；
-- `lni/`、`lua/`：属性/物品导出源与 `attr.j` 行为参考，供装备管线使用，不是运行时库；
-- `YDTrigger_backup/`：触发器备份，仅工程侧使用。
+- `BossChargeSystem.j` / `BossChargeSystemInterface.*`：BOSS 冲锋轨迹的公用能力（GUI 友好参数；同步后归入 `nncou/BossChargeSystem/`）。
 
 它不是 YDWE 代码，但也不属于某个具体玩法——判断标准见下。
 

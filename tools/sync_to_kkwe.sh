@@ -24,7 +24,7 @@ map_rel() {
         core/nncou/BossChargeSystemInterface.j|core/nncou/BossChargeSystemInterface.cfg)
             printf '%s\n' "nncou/BossChargeSystem/${rel#core/nncou/}" ;;
         # 仅工程侧使用，不同步
-        core/nncou/_tmp_update.py|core/nncou/YDTrigger_backup/*)
+        core/nncou/_tmp_update.py)
             return 1 ;;
         # core/** -> jass/**
         core/*)

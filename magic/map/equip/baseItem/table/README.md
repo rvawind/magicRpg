@@ -9,7 +9,7 @@
 
 ```
 python -I tools/ini2baseitem.py           # CSV -> Lua
-python -I tools/ini2baseitem.py export    # item.ini -> CSV（仅初始化，会拒绝覆盖）
+python -I tools/ini2baseitem.py export --ini <w3x2lni导出的item.ini>    # item.ini -> CSV（仅初始化，会拒绝覆盖）
 ```
 
 ## 文件
