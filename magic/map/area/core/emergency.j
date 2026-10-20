@@ -11,9 +11,9 @@
     - 当前生命 >= 30%：扣除当前生命 20%
     - 当前生命 < 30%（濒死）：免费，但进入 10 秒冷却
 
-    依赖：areaData, areaEnter, DebugLogger
+    依赖：areaData, areaEnter, areaExit, areaSlot, DebugLogger
 */
-library areaEmergency initializer InitEmergency requires areaData, areaEnter, DebugLogger
+library areaEmergency initializer InitEmergency requires areaData, areaEnter, areaExit, areaSlot, DebugLogger
 
 globals
     private hashtable EmergencyTable = InitHashtable()
@@ -37,23 +37,26 @@ private function PointInRect takes real x, real y, rect r returns boolean
     return x >= GetRectMinX(r) and x <= GetRectMaxX(r) and y >= GetRectMinY(r) and y <= GetRectMaxY(r)
 endfunction
 
-// 查找单位所在位置命中的出口索引（源区域匹配且单位在出口矩形内），未找到返回 -1
-private function FindExitAtPosition takes integer sourceAreaId, real x, real y returns integer
-    local integer count = GetAreaExitCount()
-    local integer i = 0
-    local rect exitRect
+// 查找单位所在位置命中的门洞方向（源房已绑定且该方向网格连通），未找到返回 -1
+private function FindDoorDirAtPosition takes integer sourceId, real x, real y returns integer
+    local integer slotId = Slot_GetSlotOf(sourceId)
+    local integer dir = 0
+    local rect door
+    if slotId < 0 then
+        return -1
+    endif
     loop
-        exitwhen i >= count
-        if GetAreaExitSourceId(i) == sourceAreaId then
-            set exitRect = GetAreaExitRect(i)
-            if PointInRect(x, y, exitRect) then
-                set exitRect = null
-                return i
+        exitwhen dir >= 4
+        set door = Slot_GetSlotDoor(slotId, dir)
+        if door != null and PointInRect(x, y, door) then
+            if Grid_GetNeighbor(sourceId, dir) >= 0 then
+                set door = null
+                return dir
             endif
         endif
-        set i = i + 1
+        set dir = dir + 1
     endloop
-    set exitRect = null
+    set door = null
     return -1
 endfunction
 
@@ -113,11 +116,12 @@ private function Trig_EmergencyCast takes nothing returns nothing
     local integer pid
     local integer sourceAreaId
     local rect curRect
-    local integer exitIndex
-    local rect targetRect
+    local integer dir
     local real cd
     // 仅处理共通紧急穿越技能
     if GetSpellAbilityId() != EMERGENCY_ABILITY_ID then
+        // 诊断：确认施法事件已触发，以及实际技能ID与配置期望值是否一致
+        call DebugLogger_Log(LOG_TRACE, "[emergency] spell ignored: cast=" + I2S(GetSpellAbilityId()) + " (" + GetObjectName(GetSpellAbilityId()) + ") expected=" + I2S(EMERGENCY_ABILITY_ID) + " (" + GetObjectName(EMERGENCY_ABILITY_ID) + ")")
         return
     endif
     set u = GetTriggerUnit()
@@ -129,7 +133,7 @@ private function Trig_EmergencyCast takes nothing returns nothing
     set pid = GetPlayerId(p)
     // 冷却检查
     if LoadReal(EmergencyTable, pid, HT_COOLDOWN) > 0.0 then
-        call DebugLogger_Log(LOG_DEBUG, "[emergency] cooldown active, skip pid=" + I2S(pid))
+        call DebugLogger_Log(LOG_TRACE, "[emergency] cooldown active, skip pid=" + I2S(pid))
         set u = null
         set p = null
         return
@@ -145,31 +149,29 @@ private function Trig_EmergencyCast takes nothing returns nothing
     endif
     // 诅咒等封锁检查
     if ShouldBlockEmergencyTraverse(sourceAreaId) then
-        call DebugLogger_Log(LOG_DEBUG, "[emergency] blocked, source=" + GetAreaIdName(sourceAreaId))
+        call DebugLogger_Log(LOG_TRACE, "[emergency] blocked, source=" + GetAreaIdName(sourceAreaId))
         set curRect = null
         set u = null
         set p = null
         return
     endif
-    // 查找脚下方向矩形
-    set exitIndex = FindExitAtPosition(sourceAreaId, GetUnitX(u), GetUnitY(u))
-    if exitIndex < 0 then
-        call DebugLogger_Log(LOG_DEBUG, "[emergency] no exit rect at position, source=" + GetAreaIdName(sourceAreaId))
+    // 查找脚下门洞方向
+    set dir = FindDoorDirAtPosition(sourceAreaId, GetUnitX(u), GetUnitY(u))
+    if dir < 0 then
+        call DebugLogger_Log(LOG_TRACE, "[emergency] no door rect at position, source=" + GetAreaIdName(sourceAreaId))
         set curRect = null
         set u = null
         set p = null
         return
     endif
-    set targetRect = GetAreaExitTargetRect(exitIndex)
-    // 施加代价 + 冷却
-    set cd = ApplyEmergencyCost(u)
-    call SetEmergencyCooldown(p, cd)
-    // 瞬时传送（复用 exit 的授权离开机制，避免被区域守卫拉回）
-    call AllowPlayerLeaveAreaOnce(p)
-    call SetUnitPosition(u, GetRectCenterX(targetRect), GetRectCenterY(targetRect))
-    call DestroyEffect(AddSpecialEffectTarget("Abilities\\Spells\\Human\\MassTeleport\\MassTeleportTarget.mdl", u, "origin"))
-    call DebugLogger_Log(LOG_INFO, "[emergency] traverse " + GetAreaIdName(sourceAreaId) + " -> " + GetAreaIdName(GetAreaIdByRect(targetRect)) + " cd=" + R2S(cd))
-    set targetRect = null
+    // 先尝试传送；成功后才扣代价并进入冷却（目标槽位分配失败时不惩罚玩家）
+    if TryTraverse(u, sourceAreaId, dir, true) then
+        set cd = ApplyEmergencyCost(u)
+        call SetEmergencyCooldown(p, cd)
+        call DebugLogger_Log(LOG_INFO, "[emergency] traverse " + GetAreaIdName(sourceAreaId) + " dir=" + I2S(dir) + " -> " + GetAreaIdName(Grid_GetNeighbor(sourceAreaId, dir)) + " cd=" + R2S(cd))
+    else
+        call DebugLogger_Log(LOG_TRACE, "[emergency] traverse failed, source=" + GetAreaIdName(sourceAreaId) + " dir=" + I2S(dir))
+    endif
     set curRect = null
     set u = null
     set p = null
@@ -187,6 +189,7 @@ endfunction
 */
 public function SetEmergencyAbilityId takes integer abilityId returns nothing
     set EMERGENCY_ABILITY_ID = abilityId
+    call DebugLogger_Log(LOG_INFO, "[emergency] ability id set to " + I2S(abilityId) + " (" + GetObjectName(abilityId) + ")")
 endfunction
 
 /*
@@ -208,7 +211,7 @@ private function InitEmergency takes nothing returns nothing
     set CastTrig = CreateTrigger()
     call TriggerRegisterAnyUnitEventBJ(CastTrig, EVENT_PLAYER_UNIT_SPELL_EFFECT)
     call TriggerAddAction(CastTrig, function Trig_EmergencyCast)
-    call DebugLogger_Log(LOG_INFO, "[emergency] InitEmergency done: cast trigger registered")
+    call DebugLogger_Log(LOG_TRACE, "[emergency] InitEmergency done: cast trigger registered")
 endfunction
 
 // 重置紧急穿越系统：清除所有玩家的冷却数据

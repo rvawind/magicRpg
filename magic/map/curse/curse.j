@@ -202,22 +202,24 @@ private function Trig_CurseDamage takes nothing returns nothing
         if LoadBoolean(CurseTable, areaId, HT_IS_CURSED) then
             // 递增 tick
             call SaveInteger(CurseTable, areaId, HT_CURSE_TICK, LoadInteger(CurseTable, areaId, HT_CURSE_TICK) + 1)
-            // 对区域内英雄造成伤害
+            // 对区域内英雄造成伤害（未绑定物理槽位的逻辑房无玩家，跳过）
             set r = GetAreaRect(areaId)
-            call GroupEnumUnitsInRect(g, r, null)
-            loop
-                set u = FirstOfGroup(g)
-                exitwhen u == null
-                call GroupRemoveUnit(g, u)
-                if IsUnitType(u, UNIT_TYPE_HERO) and GetUnitState(u, UNIT_STATE_LIFE) > 0 then
-                    set dmg = CalculateCurseDamage(areaId)
-                    set CurrentDamagedUnit = u
-                    set CurrentDamageValue = dmg
-                    if DamageTrigger != null then
-                        call TriggerExecute(DamageTrigger)
+            if r != null then
+                call GroupEnumUnitsInRect(g, r, null)
+                loop
+                    set u = FirstOfGroup(g)
+                    exitwhen u == null
+                    call GroupRemoveUnit(g, u)
+                    if IsUnitType(u, UNIT_TYPE_HERO) and GetUnitState(u, UNIT_STATE_LIFE) > 0 then
+                        set dmg = CalculateCurseDamage(areaId)
+                        set CurrentDamagedUnit = u
+                        set CurrentDamageValue = dmg
+                        if DamageTrigger != null then
+                            call TriggerExecute(DamageTrigger)
+                        endif
                     endif
-                endif
-            endloop
+                endloop
+            endif
         endif
         set i = i + 1
     endloop

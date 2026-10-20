@@ -28,6 +28,7 @@ private function UnitHasNotAloc takes nothing returns boolean
     return GetUnitAbilityLevel(GetFilterUnit(),'Aloc') == 0
 endfunction
 //
+
 //
 //计算出中心点的直线和垂线
 //并以斜线为半径画圆

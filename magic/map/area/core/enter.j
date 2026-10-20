@@ -4,28 +4,41 @@
 /*
     区域进出保护模块（通用框架）
 
-    按玩家记录当前所在区域矩形，拦截非法离开。
-    配合 areaData 使用，通过 RegisterAreaGuard 注册需要保护的区域。
-    具体大区域的注册调用放在各自的初始化文件中（如 forest.j）。
+    物理层触发器按「槽位」常驻：槽位在 WE 中注册一次，触发器只创建一次，
+    逻辑房切换绑定时不需要重建触发器。事件发生时通过槽位反查当前逻辑 ID。
+
+    - 进入：记录玩家当前所在区域矩形（按逻辑 ID 记账由 monster_room 负责）。
+    - 离开：无授权时把英雄拉回当前槽位矩形内。
+    - 空闲回收：定时扫描已绑定槽位，无玩家且（已清空 或 未激活）时释放物理槽位。
+
+    依赖：areaData, areaSlot, DebugLogger
 */
-library areaEnter requires areaData, DebugLogger
+library areaEnter requires areaData, areaSlot, DebugLogger
 
 globals
+    // 玩家跟踪（parent key = GetHandleId(player)）
     private hashtable AreaEnterTable = InitHashtable()
+    // 守卫触发器列表（parent key = 0）
+    private hashtable GuardTable = InitHashtable()
+    // 触发器 -> 槽位（parent key = GetHandleId(trigger)）
+    private hashtable GuardTrigTable = InitHashtable()
+
     private constant real AREA_ENTER_PUSH_INSET = 1.00
-    // 触发器跟踪
-    private constant integer HT_GUARD_PARENT = 0
-    private constant integer HT_TRIGGER_BOUND_RECT = 0
+
     private constant integer HT_PLAYER_AREA_RECT = 10
     private constant integer HT_PLAYER_LEAVE_ALLOWED = 11
     private constant integer HT_PLAYER_CHANNELING = 12
-    private constant integer HT_CLAMPING = 13
-    private constant integer HT_GUARD_COUNT = 500
-    private constant integer HT_GUARD_ENTER_LIST = 501
-    private constant integer HT_GUARD_LEAVE_LIST = 601
+
+    private constant integer HT_GUARD_COUNT = 0
+    private constant integer HT_GUARD_ENTER_LIST = 100
+    private constant integer HT_GUARD_LEAVE_LIST = 300
+    private constant integer HT_TRIG_SLOT = 0
+
+    private timer IdleSweepTimer = null
+    private constant real IDLE_SWEEP_INTERVAL = 1.00
 endglobals
 
-// 供其他系统读取：获取玩家当前所在区域
+// 供其他系统读取：获取玩家当前所在区域矩形
 function GetPlayerCurrentAreaRect takes player whichPlayer returns rect
     return LoadRectHandle(AreaEnterTable, GetHandleId(whichPlayer), HT_PLAYER_AREA_RECT)
 endfunction
@@ -36,12 +49,11 @@ function AllowPlayerLeaveAreaOnce takes player whichPlayer returns nothing
 endfunction
 
 // 供 monster_room 系统调用：判断玩家当前是否被授权离开当前区域
-// 用于区分真实传送离场（出口传送/紧急穿越已调用 AllowPlayerLeaveAreaOnce）与走上出口矩形被守卫拉回
 function IsPlayerLeaveAllowed takes player whichPlayer returns boolean
     return LoadBoolean(AreaEnterTable, GetHandleId(whichPlayer), HT_PLAYER_LEAVE_ALLOWED)
 endfunction
 
-// 供 exit 系统调用：标记/取消标记玩家正在出口引导中，引导期间跳过区域保护拉回
+// 保留接口：旧出口系统曾用于标记引导中状态；瞬时传送不再使用，但避免 GUI 引用报错
 function SetPlayerChanneling takes player whichPlayer, boolean flag returns nothing
     call SaveBoolean(AreaEnterTable, GetHandleId(whichPlayer), HT_PLAYER_CHANNELING, flag)
 endfunction
@@ -51,8 +63,8 @@ function SetPlayerCurrentAreaRect takes player whichPlayer, rect areaRect return
     call SaveBoolean(AreaEnterTable, GetHandleId(whichPlayer), HT_PLAYER_LEAVE_ALLOWED, false)
 endfunction
 
-private function GetBoundAreaRect takes nothing returns rect
-    return LoadRectHandle(AreaEnterTable, GetHandleId(GetTriggeringTrigger()), HT_TRIGGER_BOUND_RECT)
+private function GetBoundSlotId takes nothing returns integer
+    return LoadInteger(GuardTrigTable, GetHandleId(GetTriggeringTrigger()), HT_TRIG_SLOT)
 endfunction
 
 private function B2S takes boolean b returns string
@@ -94,100 +106,228 @@ public function ClampYInRect takes real y, rect r returns real
     return y
 endfunction
 
-// 进入区域时，按单位记录当前区域，并清除离开许可
+// ===== 玩家/房间查询 =====
+
+// 统计矩形内的存活玩家英雄数
+// 供空闲回收与槽位驱逐判定使用（比怪物房的离场记账更直接）
+function CountPlayersInRect takes rect r returns integer
+    local group g
+    local unit u
+    local integer count = 0
+    if r == null then
+        return 0
+    endif
+    set g = CreateGroup()
+    call GroupEnumUnitsInRect(g, r, null)
+    loop
+        set u = FirstOfGroup(g)
+        exitwhen u == null
+        call GroupRemoveUnit(g, u)
+        if IsUnitType(u, UNIT_TYPE_HERO) and GetUnitState(u, UNIT_STATE_LIFE) > 0.0 and GetPlayerSlotState(GetOwningPlayer(u)) == PLAYER_SLOT_STATE_PLAYING then
+            set count = count + 1
+        endif
+    endloop
+    call DestroyGroup(g)
+    set g = null
+    set u = null
+    return count
+endfunction
+
+// 释放空闲槽位：无玩家且（已清空 或 未激活）时解绑
+// BOSS 房、被诅咒房、有玩家房保留；返回是否释放
+function ReleaseAreaIfIdle takes integer areaId returns boolean
+    local integer slotId
+    local integer state
+    if areaId < 0 then
+        return false
+    endif
+    if areaId == GetBossArea() then
+        return false
+    endif
+    set slotId = Slot_GetSlotOf(areaId)
+    if slotId < 0 then
+        return false
+    endif
+    set state = GetRoomState(areaId)
+    if state == ROOM_STATE_CURSED then
+        return false
+    endif
+    if CountPlayersInRect(Slot_GetSlotRegion(slotId)) > 0 then
+        return false
+    endif
+    if state == ROOM_STATE_CLEARED or state == ROOM_STATE_INACTIVE then
+        call DebugLogger_Log(LOG_INFO, "[enter] release idle room " + GetAreaIdName(areaId) + " slot=" + I2S(slotId) + " state=" + I2S(state))
+        call Slot_Release(areaId)
+        return true
+    endif
+    return false
+endfunction
+
+// ===== 事件处理 =====
+
+// 进入区域：记录玩家当前区域矩形
+// 只处理英雄，避免召唤物/中立单位改写玩家的区域记录
 private function Trig_AreaEnterActions takes nothing returns nothing
     local unit u = GetTriggerUnit()
-    local player p = GetOwningPlayer(u)
-    local rect r = GetBoundAreaRect()
+    local player p
+    local integer slotId
+    local integer areaId
+    local rect r
+    if u == null or not IsUnitType(u, UNIT_TYPE_HERO) then
+        set u = null
+        return
+    endif
+    set slotId = GetBoundSlotId()
+    set areaId = Slot_GetLogicalId(slotId)
+    if areaId < 0 then
+        set u = null
+        return
+    endif
+    set p = GetOwningPlayer(u)
+    set r = Slot_GetSlotRegion(slotId)
     call SetPlayerCurrentAreaRect(p, r)
-    call DebugLogger_Log(LOG_DEBUG, "[enter] " + GetPlayerName(p) + " entered " + GetAreaIdName(GetAreaIdByRect(r)))
+    call DebugLogger_Log(LOG_TRACE, "[enter] " + GetPlayerName(p) + " entered " + GetAreaIdName(areaId) + " slot=" + I2S(slotId))
     set u = null
     set p = null
     set r = null
 endfunction
 
-// 离开区域时，若单位不存在离开许可，则强制拉回到当前区域内最近点
+// 离开区域：无授权则拉回当前槽位矩形内
 private function Trig_AreaLeaveActions takes nothing returns nothing
     local unit u = GetTriggerUnit()
-    local player p = GetOwningPlayer(u)
-    local rect r = GetBoundAreaRect()
+    local player p
+    local integer slotId
+    local integer areaId
+    local rect r
     local real x
     local real y
-    if LoadBoolean(AreaEnterTable, GetHandleId(p), HT_PLAYER_LEAVE_ALLOWED) then
-        call DebugLogger_Log(LOG_DEBUG, "[enter] " + GetPlayerName(p) + " allowed to leave " + GetAreaIdName(GetAreaIdByRect(r)))
+    if u == null or not IsUnitType(u, UNIT_TYPE_HERO) then
+        set u = null
+        return
+    endif
+    set slotId = GetBoundSlotId()
+    set areaId = Slot_GetLogicalId(slotId)
+    if areaId < 0 then
+        set u = null
+        return
+    endif
+    set p = GetOwningPlayer(u)
+    set r = Slot_GetSlotRegion(slotId)
+    if r == null then
+        set u = null
+        set p = null
+        return
+    endif
+    // 真实瞬移离场：已授权，或目标房 enter 已先行切换了玩家当前区域
+    // （触发器注册顺序可能导致目标 enter 先于源 leave 执行并重置 leave_allowed）
+    if LoadBoolean(AreaEnterTable, GetHandleId(p), HT_PLAYER_LEAVE_ALLOWED) or GetPlayerCurrentAreaRect(p) != r then
+        call DebugLogger_Log(LOG_TRACE, "[enter] " + GetPlayerName(p) + " allowed to leave " + GetAreaIdName(areaId))
     else
         set x = GetUnitX(u)
         set y = GetUnitY(u)
         set x = ClampXInRect(x, r)
         set y = ClampYInRect(y, r)
-        call SetUnitX(u, x)
-        call SetUnitY(u, y)
-        call DebugLogger_Log(LOG_DEBUG, "[enter] " + GetPlayerName(p) + " clamped back to " + GetAreaIdName(GetAreaIdByRect(r)))
+        // 必须用 SetUnitPosition：会触发区域进入事件，保证引擎记录与系统记录一致
+        call SetUnitPosition(u, x, y)
+        call DebugLogger_Log(LOG_TRACE, "[enter] " + GetPlayerName(p) + " clamped back to " + GetAreaIdName(areaId))
     endif
     set u = null
     set p = null
     set r = null
 endfunction
 
-// 遍历所有已注册区域，为每个区域创建进出监听触发器
-function InitAreaGuards takes nothing returns nothing
-    local integer count = GetAreaCount()
+// 定时回收空闲槽位
+private function Trig_IdleSweep takes nothing returns nothing
     local integer i = 0
+    local integer count = Slot_GetCount()
     local integer areaId
+    loop
+        exitwhen i >= count
+        set areaId = Slot_GetLogicalId(i)
+        if areaId >= 0 then
+            call ReleaseAreaIfIdle(areaId)
+        endif
+        set i = i + 1
+    endloop
+endfunction
+
+// ===== 初始化 / 重置 =====
+
+// 重置区域进出保护：销毁槽位触发器与空闲扫描定时器，清空玩家跟踪数据
+// 注意：JASS 不允许前向引用，本函数必须定义在 InitAreaGuards 之前
+function ResetAreaEnter takes nothing returns nothing
+    local integer count = LoadInteger(GuardTable, 0, HT_GUARD_COUNT)
+    local integer i = 0
+    local trigger t
+    loop
+        exitwhen i >= count
+        set t = LoadTriggerHandle(GuardTable, 0, HT_GUARD_ENTER_LIST + i)
+        if t != null then
+            call FlushChildHashtable(GuardTrigTable, GetHandleId(t))
+            call DestroyTrigger(t)
+        endif
+        set t = LoadTriggerHandle(GuardTable, 0, HT_GUARD_LEAVE_LIST + i)
+        if t != null then
+            call FlushChildHashtable(GuardTrigTable, GetHandleId(t))
+            call DestroyTrigger(t)
+        endif
+        call RemoveSavedHandle(GuardTable, 0, HT_GUARD_ENTER_LIST + i)
+        call RemoveSavedHandle(GuardTable, 0, HT_GUARD_LEAVE_LIST + i)
+        set i = i + 1
+    endloop
+    call SaveInteger(GuardTable, 0, HT_GUARD_COUNT, 0)
+    if IdleSweepTimer != null then
+        call PauseTimer(IdleSweepTimer)
+        call DestroyTimer(IdleSweepTimer)
+        set IdleSweepTimer = null
+    endif
+    set i = 0
+    loop
+        exitwhen i >= bj_MAX_PLAYERS
+        call FlushChildHashtable(AreaEnterTable, GetHandleId(Player(i)))
+        set i = i + 1
+    endloop
+    set t = null
+    call DebugLogger_Log(LOG_TRACE, "[enter] ResetAreaEnter done")
+endfunction
+
+// 为每个已注册物理槽位创建常驻进出监听触发器
+function InitAreaGuards takes nothing returns nothing
+    local integer count = Slot_GetCount()
+    local integer i = 0
     local rect areaRect
     local trigger enter
     local trigger leave
+    if LoadInteger(GuardTable, 0, HT_GUARD_COUNT) > 0 then
+        call ResetAreaEnter()
+    endif
     loop
         exitwhen i >= count
-        set areaId = GetAreaByIndex(i)
-        set areaRect = GetAreaRect(areaId)
-        set enter = CreateTrigger()
-        set leave = CreateTrigger()
-        call SaveRectHandle(AreaEnterTable, GetHandleId(enter), HT_TRIGGER_BOUND_RECT, areaRect)
-        call SaveRectHandle(AreaEnterTable, GetHandleId(leave), HT_TRIGGER_BOUND_RECT, areaRect)
-        call TriggerRegisterEnterRectSimple(enter, areaRect)
-        call TriggerRegisterLeaveRectSimple(leave, areaRect)
-        call TriggerAddAction(enter, function Trig_AreaEnterActions)
-        call TriggerAddAction(leave, function Trig_AreaLeaveActions)
-        call DebugLogger_Log(LOG_DEBUG, "[enter] InitAreaGuards #" + I2S(i) + " " + GetAreaIdName(areaId))
-        call SaveTriggerHandle(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_ENTER_LIST + i, enter)
-        call SaveTriggerHandle(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_LEAVE_LIST + i, leave)
-        call SaveInteger(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_COUNT, i + 1)
+        set areaRect = Slot_GetSlotRegion(i)
+        if areaRect != null then
+            set enter = CreateTrigger()
+            set leave = CreateTrigger()
+            call SaveInteger(GuardTrigTable, GetHandleId(enter), HT_TRIG_SLOT, i)
+            call SaveInteger(GuardTrigTable, GetHandleId(leave), HT_TRIG_SLOT, i)
+            call TriggerRegisterEnterRectSimple(enter, areaRect)
+            call TriggerRegisterLeaveRectSimple(leave, areaRect)
+            call TriggerAddAction(enter, function Trig_AreaEnterActions)
+            call TriggerAddAction(leave, function Trig_AreaLeaveActions)
+            call SaveTriggerHandle(GuardTable, 0, HT_GUARD_ENTER_LIST + i, enter)
+            call SaveTriggerHandle(GuardTable, 0, HT_GUARD_LEAVE_LIST + i, leave)
+            call DebugLogger_Log(LOG_TRACE, "[enter] guard slot=" + I2S(i) + " center=(" + R2S(GetRectCenterX(areaRect)) + "," + R2S(GetRectCenterY(areaRect)) + ")")
+        endif
         set i = i + 1
     endloop
+    call SaveInteger(GuardTable, 0, HT_GUARD_COUNT, count)
+    if IdleSweepTimer == null then
+        set IdleSweepTimer = CreateTimer()
+        call TimerStart(IdleSweepTimer, IDLE_SWEEP_INTERVAL, true, function Trig_IdleSweep)
+    endif
+    call DebugLogger_Log(LOG_INFO, "[enter] InitAreaGuards done: slots=" + I2S(count))
     set areaRect = null
     set enter = null
     set leave = null
-endfunction
-
-// 重置区域进出保护：销毁所有已注册的保护触发器，清空玩家跟踪数据
-// 供 ChapterManager 在关卡切换时调用
-function ResetAreaEnter takes nothing returns nothing
-    local integer count = LoadInteger(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_COUNT)
-    local integer i = 0
-    local trigger t
-    // 销毁所有进入触发器
-    loop
-        exitwhen i >= count
-        set t = LoadTriggerHandle(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_ENTER_LIST + i)
-        if t != null then
-            call DestroyTrigger(t)
-        endif
-        set i = i + 1
-    endloop
-    // 销毁所有离开触发器
-    set i = 0
-    loop
-        exitwhen i >= count
-        set t = LoadTriggerHandle(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_LEAVE_LIST + i)
-        if t != null then
-            call DestroyTrigger(t)
-        endif
-        set i = i + 1
-    endloop
-    // 重置计数器，旧数据由重新注册时覆盖
-    call SaveInteger(AreaEnterTable, HT_GUARD_PARENT, HT_GUARD_COUNT, 0)
-    set t = null
 endfunction
 
 endlibrary

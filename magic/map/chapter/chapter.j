@@ -30,7 +30,7 @@
 
     依赖：areaData, areaEnter, areaExit, areaMonsterRoom, ChapterTimer, CurseSystem, BossSystem
 */
-library ChapterManager requires areaData, areaEnter, areaExit, areaMonsterRoom, ChapterTimer, CurseSystem, BossSystem, RewardAltar, RewardItem, UiPick, DebugLogger
+library ChapterManager requires areaGrid, areaSlot, areaData, areaEnter, areaExit, areaMonsterRoom, ChapterTimer, CurseSystem, BossSystem, RewardAltar, RewardItem, UiPick, DebugLogger
 
 globals
     private hashtable ChapterTable = InitHashtable()
@@ -115,7 +115,8 @@ endfunction
 // BOSS死亡处理器：完成关卡 + BOSS奖励
 // 作为 code 传给 BossSystem_RegisterBossDeathCallback，须在 OnChapterStart 之前声明
 private function OnBossDeathHandler takes nothing returns nothing
-    call RewardAltar_SpawnAltar(BossSystem_GetBossRoomId(), 3)
+    // 第二参数是房间类型：ROOM_TYPE_BOSS 映射到最高奖励等级
+    call RewardAltar_SpawnAltar(BossSystem_GetBossRoomId(), ROOM_TYPE_BOSS)
     call CompleteChapter()
 endfunction
 
@@ -132,7 +133,8 @@ endfunction
 // ===== 内部：统一重置所有子系统 =====
 
 // 按依赖逆序重置：先清理依赖其他模块的系统，最后清理基础数据
-// 顺序：BossSystem → RewardAltar → RewardItem → MonsterRoom → CurseSystem → AreaExit → AreaEmergency → AreaEnter → AreaData
+// 顺序：BossSystem → RewardAltar → RewardItem → MonsterRoom → CurseSystem → AreaExit
+//       → AreaEmergency → AreaEnter → AreaData → AreaSlot → AreaGrid
 private function ResetAllSubsystems takes nothing returns nothing
     call ResetBossSystem()
     call ResetRewardAltar()
@@ -143,6 +145,9 @@ private function ResetAllSubsystems takes nothing returns nothing
     call ResetAreaEmergency()
     call ResetAreaEnter()
     call ResetAreaData()
+    // 逻辑数据清空后再清物理绑定；ResetAreaSlot 需要旧网格尺寸来清理粘性记忆
+    call ResetAreaSlot()
+    call ResetAreaGrid()
 endfunction
 
 // ===== 公开接口 =====
@@ -371,10 +376,12 @@ public function ChapterEnter takes string chapterName, group heroGroup returns n
     loop
         exitwhen u == null
         call DebugLogger_Log(LOG_INFO, "[chapter] ChapterEnter: teleporting " + GetUnitName(u) + " to (" + R2S(cx) + "," + R2S(cy) + ")")
-        call SetPlayerCurrentAreaRect(GetOwningPlayer(u), enterRect)
+        // 先授权离开原位置（跨关卡时可能仍在上一关的槽位矩形内）
         call AllowPlayerLeaveAreaOnce(GetOwningPlayer(u))
-        call SetUnitX(u, cx)
-        call SetUnitY(u, cy)
+        // 用 SetUnitPosition：会触发区域进入事件，入口房的 guard 会自动记录当前区域
+        call SetUnitPosition(u, cx, cy)
+        // 即使进入事件未触发（例如坐标刚好未跨入矩形），也保证系统记录正确
+        call SetPlayerCurrentAreaRect(GetOwningPlayer(u), enterRect)
         call DebugLogger_Log(LOG_INFO, "[chapter] ChapterEnter: " + GetUnitName(u) + " actual pos=(" + R2S(GetUnitX(u)) + "," + R2S(GetUnitY(u)) + ")")
         call GroupRemoveUnit(tempGroup, u)
         set u = FirstOfGroup(tempGroup)

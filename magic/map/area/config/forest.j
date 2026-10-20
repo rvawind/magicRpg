@@ -1,71 +1,203 @@
-#ifndef AREA_INCLUDED
-#define AREA_INCLUDED
+#ifndef FOREST_INCLUDED
+#define FOREST_INCLUDED
+#include "nncou\\magic\\map\\area\\core\\grid.j"
+#include "nncou\\magic\\map\\area\\core\\slot.j"
 #include "nncou\\magic\\map\\area\\core\\data.j"
 #include "nncou\\magic\\map\\area\\core\\enter.j"
 #include "nncou\\magic\\map\\area\\core\\exit.j"
 #include "nncou\\magic\\map\\area\\core\\monster_room.j"
+#include "nncou\\magic\\map\\area\\core\\emergency.j"
 #include "nncou\\magic\\map\\ui\\uiPick.j"
 #include "nncou\\magic\\map\\reward\\reward.j"
 #include "nncou\\magic\\map\\reward\\altar.j"
-#endif
+#include "nncou\\magic\\map\\curse\\curse.j"
+#include "nncou\\magic\\map\\boss\\boss.j"
+#include "nncou\\magic\\map\\timer\\timer.j"
 /*
-    Forest 关卡配置文件
+    Forest 关卡配置文件（Step 3：7×7 逻辑网格 + 物理槽位池）
 
-    负责注册 Forest 大区域的所有区域、邻接关系、出口、BOSS 房、入口和诅咒起始区域。
-    通过 ChapterManager 统一管理初始化和关卡切换。
+    逻辑层：
+    - 7×7 = 49 个逻辑房间，logicalId = row * 7 + col，全部永久存在。
+    - 邻接由随机 DFS 生成树 + 额外边构成，保证全图连通。
+    - 起点从外围 8 个候选（4 角 + 4 边中点）随机选 1 个。
+    - BOSS 逻辑房从内部候选 (2,2)/(3,3)/(4,4) 随机选 1 个。
 
-    Forest 有向图（24 条边）：
-    A → C, N
-    C → A, F
-    E → N
-    F → C, I
-    G → H
-    H → G, M, I
-    I → N, J
-    J → H
-    K → H, L
-    L → M, K
-    M → N, H, L
-    N → A, G, E
+    物理层（WE 中手工摆放，与逻辑坐标完全无关）：
+    - 4 种地形 × 每地形 5 个普通物理房 = 20 个槽位；
+    - 1 个 BOSS 预留槽位，只绑定 BOSS 逻辑房，不参与普通分配/驱逐。
+    - 每个物理房需要 1 个区域矩形；门洞矩形由本文件按房间边缘自动生成。
+      （如需手工摆放门洞，可把 MakeDoorRect 替换为对应的 gg_rct 引用。）
 
-    出口矩形变量：
-    - gg_rct_Forest_Exit_A2C    - gg_rct_Forest_Exit_A2N
-    - gg_rct_Forest_Exit_C2A    - gg_rct_Forest_Exit_C2F
-    - gg_rct_Forest_Exit_E2N
-    - gg_rct_Forest_Exit_F2C    - gg_rct_Forest_Exit_F2I
-    - gg_rct_Forest_Exit_G2H
-    - gg_rct_Forest_Exit_H2G    - gg_rct_Forest_Exit_H2M    - gg_rct_Forest_Exit_H2I
-    - gg_rct_Forest_Exit_I2N    - gg_rct_Forest_Exit_I2J
-    - gg_rct_Forest_Exit_J2H
-    - gg_rct_Forest_Exit_K2H    - gg_rct_Forest_Exit_K2L
-    - gg_rct_Forest_Exit_L2M    - gg_rct_Forest_Exit_L2K
-    - gg_rct_Forest_Exit_M2N    - gg_rct_Forest_Exit_M2H    - gg_rct_Forest_Exit_M2L
-    - gg_rct_Forest_Exit_N2A    - gg_rct_Forest_Exit_N2G    - gg_rct_Forest_Exit_N2E
+    需要的 WE 区域矩形变量（共 21 个）：
+      gg_rct_FR_A1 .. gg_rct_FR_A5   // 地形 0
+      gg_rct_FR_B1 .. gg_rct_FR_B5   // 地形 1
+      gg_rct_FR_C1 .. gg_rct_FR_C5   // 地形 2
+      gg_rct_FR_D1 .. gg_rct_FR_D5   // 地形 3
+      gg_rct_FR_BOSS                 // BOSS 预留槽
+
+    槽位生命周期：
+    - 进入某逻辑房前由 Area_EnsureBound 分配同地形槽位（优先粘性复用）；
+    - 无玩家且（CLEARED 或 INACTIVE）时由 areaEnter 定时回收；
+    - 槽位池满时只驱逐「无玩家、非 BOSS、非诅咒、CLEARED/INACTIVE」的同地形槽位。
 */
-library Forest initializer InitForestConfig requires ChapterManager, RewardAltar
+library Forest initializer InitForestConfig requires areaGrid, areaSlot, areaData, areaEnter, areaExit, areaMonsterRoom, ChapterManager, BossSystem, CurseSystem, ChapterTimer, RewardAltar, RewardItem, DebugLogger
 
 globals
     // Forest 关卡 ID（由 RegisterChapter 返回，在 InitForestConfig 中赋值）
     private integer FOREST_CHAPTER_ID = 0
 
-    // Forest 区域 ID 常量（A-N 中无 B，D 为 BOSS 房）
-    constant integer FOREST_A = 0
-    constant integer FOREST_C = 1
-    constant integer FOREST_D = 2
-    constant integer FOREST_E = 3
-    constant integer FOREST_F = 4
-    constant integer FOREST_G = 5
-    constant integer FOREST_H = 6
-    constant integer FOREST_I = 7
-    constant integer FOREST_J = 8
-    constant integer FOREST_K = 9
-    constant integer FOREST_L = 10
-    constant integer FOREST_M = 11
-    constant integer FOREST_N = 12
+    // 网格尺寸与剪枝概率
+    private constant integer FOREST_ROWS = 7
+    private constant integer FOREST_COLS = 7
+    private constant real FOREST_PRUNE_CHANCE = 0.30
+
+    // 地形编号（与物理槽位注册顺序一致）
+    private constant integer TERRAIN_A = 0
+    private constant integer TERRAIN_B = 1
+    private constant integer TERRAIN_C = 2
+    private constant integer TERRAIN_D = 3
+
+    // 自动生成门洞矩形的尺寸（门洞位于房间边缘内侧，避免被区域守卫拉回）
+    private constant real DOOR_HALF_WIDTH = 80.0
+    private constant real DOOR_DEPTH = 64.0
+
+    // 物理房间只注册一次（跨关卡保留）
+    private boolean PhysicalRoomsRegistered = false
 endglobals
 
-// Forest 关卡初始化回调，由 ChapterManager.StartChapter 触发
-// 负责注册所有区域、邻接关系、出口、入口，并执行房间类型分配和怪物房初始化
+// ===== 物理层：门洞矩形 =====
+
+// 按房间区域边缘生成门洞矩形（方向使用 areaGrid 的 DIR_* 常量）
+private function MakeDoorRect takes rect r, integer dir returns rect
+    local real minX = GetRectMinX(r)
+    local real maxX = GetRectMaxX(r)
+    local real minY = GetRectMinY(r)
+    local real maxY = GetRectMaxY(r)
+    local real cx = (minX + maxX) / 2.0
+    local real cy = (minY + maxY) / 2.0
+    if dir == DIR_UP then
+        return Rect(cx - DOOR_HALF_WIDTH, maxY - DOOR_DEPTH, cx + DOOR_HALF_WIDTH, maxY)
+    elseif dir == DIR_DOWN then
+        return Rect(cx - DOOR_HALF_WIDTH, minY, cx + DOOR_HALF_WIDTH, minY + DOOR_DEPTH)
+    elseif dir == DIR_LEFT then
+        return Rect(minX, cy - DOOR_HALF_WIDTH, minX + DOOR_DEPTH, cy + DOOR_HALF_WIDTH)
+    endif
+    return Rect(maxX - DOOR_DEPTH, cy - DOOR_HALF_WIDTH, maxX, cy + DOOR_HALF_WIDTH)
+endfunction
+
+// 注册一个物理房：区域矩形必填，4 个门洞自动生成
+private function RegisterRoomWithAutoDoors takes integer terrain, rect r returns nothing
+    if r == null then
+        call DebugLogger_Log(LOG_WARN, "[forest] physical room skipped: null region, terrain=" + I2S(terrain))
+        return
+    endif
+    call areaSlot_RegisterPhysicalRoom(terrain, r, MakeDoorRect(r, DIR_UP), MakeDoorRect(r, DIR_DOWN), MakeDoorRect(r, DIR_LEFT), MakeDoorRect(r, DIR_RIGHT))
+endfunction
+
+// ===== 槽位钩子 =====
+
+// 分配成功：刷新门洞特效；已清空的房间重新绑定时恢复祭坛
+private function OnSlotAcquire takes nothing returns nothing
+    local integer areaId = Slot_GetLastAcquiredLogical()
+    local integer slotId
+    local integer roomType
+    if areaId < 0 then
+        return
+    endif
+    set slotId = Slot_GetSlotOf(areaId)
+    call RefreshSlotDoors(slotId)
+    if GetRoomState(areaId) == ROOM_STATE_CLEARED then
+        set roomType = GetRoomType(areaId)
+        if (roomType == ROOM_TYPE_MONSTER or roomType == ROOM_TYPE_ELITE) and not RewardAltar_HasAltar(areaId) then
+            call RewardAltar_SpawnAltar(areaId, roomType)
+            call DebugLogger_Log(LOG_INFO, "[forest] respawn altar for reacquired cleared room " + GetAreaIdName(areaId))
+        endif
+    endif
+    call DebugLogger_Log(LOG_TRACE, "[forest] slot acquire area=" + GetAreaIdName(areaId) + " slot=" + I2S(slotId))
+endfunction
+
+// 解绑前：清理门洞特效、祭坛、房间怪物与刷怪计时器
+private function OnSlotRelease takes nothing returns nothing
+    local integer areaId = Slot_GetLastReleasedLogical()
+    local integer slotId
+    if areaId < 0 then
+        return
+    endif
+    set slotId = Slot_GetSlotOf(areaId)
+    call ClearSlotDoors(slotId)
+    call RewardAltar_RemoveArea(areaId)
+    call areaMonsterRoom_OnSlotReleased(areaId)
+    call DebugLogger_Log(LOG_TRACE, "[forest] slot release area=" + GetAreaIdName(areaId) + " slot=" + I2S(slotId))
+endfunction
+
+// 槽位溢出时的驱逐判定：只允许驱逐无玩家、非 BOSS、已清空或未激活的房间
+private function CanEvictRoom takes nothing returns boolean
+    local integer areaId = Slot_GetEvalLogical()
+    local integer state
+    if areaId < 0 then
+        return false
+    endif
+    if areaId == GetBossArea() then
+        return false
+    endif
+    set state = GetRoomState(areaId)
+    if state != ROOM_STATE_CLEARED and state != ROOM_STATE_INACTIVE then
+        return false
+    endif
+    if CountPlayersInRect(GetAreaRect(areaId)) > 0 then
+        return false
+    endif
+    return true
+endfunction
+
+// ===== 物理层：一次性注册 =====
+
+private function InitForestPhysicalRooms takes nothing returns nothing
+    if PhysicalRoomsRegistered then
+        return
+    endif
+    set PhysicalRoomsRegistered = true
+
+    // 地形 0
+    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A1)
+    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A2)
+    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A3)
+    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A4)
+    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A5)
+
+    // 地形 1
+    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B1)
+    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B2)
+    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B3)
+    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B4)
+    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B5)
+
+    // 地形 2
+    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C1)
+    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C2)
+    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C3)
+    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C4)
+    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C5)
+
+    // 地形 3
+    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D1)
+    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D2)
+    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D3)
+    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D4)
+    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D5)
+
+    // BOSS 预留槽（地形 -1）
+    call RegisterRoomWithAutoDoors(-1, gg_rct_FR_BOSS)
+
+    call Slot_SetAcquireHook(function OnSlotAcquire)
+    call Slot_SetReleaseHook(function OnSlotRelease)
+    call Slot_SetEvictFilter(function CanEvictRoom)
+
+    call DebugLogger_Log(LOG_INFO, "[forest] physical rooms registered: slots=" + I2S(Slot_GetCount()) + " terrains=" + I2S(Slot_GetTerrainTypeCount()))
+endfunction
+
+// ===== 怪物组 =====
+
 // 创建并注册 Forest 的怪物组
 // 难度档位：1=普通（出现在 ROOM_TYPE_MONSTER），2=困难（出现在 ROOM_TYPE_ELITE）
 // 每个组的 minLv/maxLv 决定它在哪些难度档位的房间中可被抽中
@@ -99,116 +231,64 @@ function InitForestMonsterGroups takes nothing returns nothing
     // call MonsterGroup_AddMonsterToGroup(gForestTreeSpirit, 'o005', 3)
 endfunction
 
-function InitForest takes nothing returns nothing
+// ===== 关卡初始化 =====
 
-    
+// Forest 关卡初始化回调，由 ChapterManager.StartChapter 触发
+function InitForest takes nothing returns nothing
+    local integer i = 0
+
+    // 物理房注册只做一次；之后每次进入关卡只重建逻辑数据
+    call InitForestPhysicalRooms()
+
     // 出生点
     call ChapterManager_SetVillageRect(gg_rct_Village)
-    
-    // 注册区域
-    call RegisterArea(FOREST_A, gg_rct_Forest_A)
-    call RegisterArea(FOREST_C, gg_rct_Forest_C)
-    call RegisterArea(FOREST_D, gg_rct_Forest_D)
-    call RegisterArea(FOREST_E, gg_rct_Forest_E)
-    call RegisterArea(FOREST_F, gg_rct_Forest_F)
-    call RegisterArea(FOREST_G, gg_rct_Forest_G)
-    call RegisterArea(FOREST_H, gg_rct_Forest_H)
-    call RegisterArea(FOREST_I, gg_rct_Forest_I)
-    call RegisterArea(FOREST_J, gg_rct_Forest_J)
-    call RegisterArea(FOREST_K, gg_rct_Forest_K)
-    call RegisterArea(FOREST_L, gg_rct_Forest_L)
-    call RegisterArea(FOREST_M, gg_rct_Forest_M)
-    call RegisterArea(FOREST_N, gg_rct_Forest_N)
 
-    // 注册邻接关系（有向边）
-    call RegisterNeighbor(FOREST_A, FOREST_C)
-    call RegisterNeighbor(FOREST_A, FOREST_N)
-    call RegisterNeighbor(FOREST_C, FOREST_A)
-    call RegisterNeighbor(FOREST_C, FOREST_F)
-    call RegisterNeighbor(FOREST_E, FOREST_N)
-    call RegisterNeighbor(FOREST_F, FOREST_C)
-    call RegisterNeighbor(FOREST_F, FOREST_I)
-    call RegisterNeighbor(FOREST_G, FOREST_H)
-    call RegisterNeighbor(FOREST_H, FOREST_G)
-    call RegisterNeighbor(FOREST_H, FOREST_M)
-    call RegisterNeighbor(FOREST_H, FOREST_I)
-    call RegisterNeighbor(FOREST_I, FOREST_N)
-    call RegisterNeighbor(FOREST_I, FOREST_J)
-    call RegisterNeighbor(FOREST_J, FOREST_H)
-    call RegisterNeighbor(FOREST_K, FOREST_H)
-    call RegisterNeighbor(FOREST_K, FOREST_L)
-    call RegisterNeighbor(FOREST_L, FOREST_M)
-    call RegisterNeighbor(FOREST_L, FOREST_K)
-    call RegisterNeighbor(FOREST_M, FOREST_N)
-    call RegisterNeighbor(FOREST_M, FOREST_H)
-    call RegisterNeighbor(FOREST_M, FOREST_L)
-    call RegisterNeighbor(FOREST_N, FOREST_A)
-    call RegisterNeighbor(FOREST_N, FOREST_G)
-    call RegisterNeighbor(FOREST_N, FOREST_E)
+    // 1) 逻辑网格：7×7，随机生成树 + 额外边
+    call Grid_Init(FOREST_ROWS, FOREST_COLS)
+    call Grid_SetPruneChance(FOREST_PRUNE_CHANCE)
+    call Grid_BuildEdges()
 
-    // 注册出口
-    call RegisterAreaExit(gg_rct_Forest_Exit_A2C, gg_rct_Forest_C, FOREST_A)
-    call RegisterAreaExit(gg_rct_Forest_Exit_A2N, gg_rct_Forest_N, FOREST_A)
-    call RegisterAreaExit(gg_rct_Forest_Exit_C2A, gg_rct_Forest_A, FOREST_C)
-    call RegisterAreaExit(gg_rct_Forest_Exit_C2F, gg_rct_Forest_F, FOREST_C)
-    call RegisterAreaExit(gg_rct_Forest_Exit_E2N, gg_rct_Forest_N, FOREST_E)
-    call RegisterAreaExit(gg_rct_Forest_Exit_F2C, gg_rct_Forest_C, FOREST_F)
-    call RegisterAreaExit(gg_rct_Forest_Exit_F2I, gg_rct_Forest_I, FOREST_F)
-    call RegisterAreaExit(gg_rct_Forest_Exit_G2H, gg_rct_Forest_H, FOREST_G)
-    call RegisterAreaExit(gg_rct_Forest_Exit_H2G, gg_rct_Forest_G, FOREST_H)
-    call RegisterAreaExit(gg_rct_Forest_Exit_H2M, gg_rct_Forest_M, FOREST_H)
-    call RegisterAreaExit(gg_rct_Forest_Exit_H2I, gg_rct_Forest_I, FOREST_H)
-    call RegisterAreaExit(gg_rct_Forest_Exit_I2N, gg_rct_Forest_N, FOREST_I)
-    call RegisterAreaExit(gg_rct_Forest_Exit_I2J, gg_rct_Forest_J, FOREST_I)
-    call RegisterAreaExit(gg_rct_Forest_Exit_J2H, gg_rct_Forest_H, FOREST_J)
-    call RegisterAreaExit(gg_rct_Forest_Exit_K2H, gg_rct_Forest_H, FOREST_K)
-    call RegisterAreaExit(gg_rct_Forest_Exit_K2L, gg_rct_Forest_L, FOREST_K)
-    call RegisterAreaExit(gg_rct_Forest_Exit_L2M, gg_rct_Forest_M, FOREST_L)
-    call RegisterAreaExit(gg_rct_Forest_Exit_L2K, gg_rct_Forest_K, FOREST_L)
-    call RegisterAreaExit(gg_rct_Forest_Exit_M2N, gg_rct_Forest_N, FOREST_M)
-    call RegisterAreaExit(gg_rct_Forest_Exit_M2H, gg_rct_Forest_H, FOREST_M)
-    call RegisterAreaExit(gg_rct_Forest_Exit_M2L, gg_rct_Forest_L, FOREST_M)
-    call RegisterAreaExit(gg_rct_Forest_Exit_N2A, gg_rct_Forest_A, FOREST_N)
-    call RegisterAreaExit(gg_rct_Forest_Exit_N2G, gg_rct_Forest_G, FOREST_N)
-    call RegisterAreaExit(gg_rct_Forest_Exit_N2E, gg_rct_Forest_E, FOREST_N)
+    // 2) 注册全部逻辑房间（49 个）
+    loop
+        exitwhen i >= Grid_GetTotal()
+        call RegisterArea(i)
+        set i = i + 1
+    endloop
 
-    // 入口区域（H, K, I, E）
-    call AreaAddEnter(FOREST_H)
-    call AreaAddEnter(FOREST_K)
-    call AreaAddEnter(FOREST_I)
-    call AreaAddEnter(FOREST_E)
+    // 3) 起点候选：外围 8 个（4 角 + 4 边中点）
+    call AreaAddPeripheralEnters()
 
-    // 随机确定本次游戏的入口（使用 Forest 的 chapterId）
+    // 4) BOSS 候选：内部坐标（避免开局贴着外围入口）
+    call AreaAddBossCandidate(Grid_GetId(2, 2))
+    call AreaAddBossCandidate(Grid_GetId(3, 3))
+    call AreaAddBossCandidate(Grid_GetId(4, 4))
+    call RollBossArea()
+
+    // 5) 随机确定本关入口（排除 BOSS 房）
     call RollActiveEnter(FOREST_CHAPTER_ID)
 
-    // BOSS房标记
-    call AreaSetBossroom(FOREST_D)
-
-    // 诅咒起始区域（远离BOSS房的外围区域）
-    call AddCurseStartArea(FOREST_A)
-    call AddCurseStartArea(FOREST_C)
-    call AddCurseStartArea(FOREST_E)
-
-    // 房间类型权重配置
-    call RegisterRoomType(ROOM_TYPE_MONSTER, 5, 8)
+    // 6) 房间类型权重配置
+    call RegisterRoomType(ROOM_TYPE_MONSTER, 30, ROOM_MAX_UNLIMITED)
     call SetRoomTypeWeight(ROOM_TYPE_MONSTER, 700)
     call RegisterRoomType(ROOM_TYPE_SAFE, 1, 2)
     call SetRoomTypeWeight(ROOM_TYPE_SAFE, 200)
     call RegisterRoomType(ROOM_TYPE_ELITE, 1, 2)
     call SetRoomTypeWeight(ROOM_TYPE_ELITE, 100)
 
-    // 执行房间类型分配（仅本次激活入口为安全房，其余候选入口正常分配）
+    // 7) 执行房间类型/地形分配（仅本次激活入口为入口房）
     call InitAreaWithEnter(FOREST_CHAPTER_ID)
 
-    // 创建区域进出保护和出口触发器（必须在 InitArea 之后，所有数据注册完成之后）
+    // 8) 预绑定 BOSS 逻辑房到预留槽位
+    if Area_EnsureBound(GetBossArea()) < 0 then
+        call DebugLogger_Log(LOG_WARN, "[forest] cannot bind boss area " + GetAreaIdName(GetBossArea()))
+    endif
+
+    // 9) 物理槽位常驻触发器（必须在物理房注册之后）
     call InitAreaGuards()
     call InitAreaExits()
 
-    // 创建并注册怪物组（必须在 InitMonsterRoom 之前，否则池为空导致各怪物房无法绑定组）
+    // 10) 怪物组与怪物房（必须在 InitAreaWithEnter 之后）
     call InitForestMonsterGroups()
-
-    // 初始化怪物房系统（必须在 InitArea 之后）
-    // 怪物组按难度档位在 InitMonsterRoom 中随机绑定到各怪物房
     call InitMonsterRoom()
 
     /*
@@ -218,11 +298,13 @@ function InitForest takes nothing returns nothing
         o002 : 巨魔训狼者（普通怪物） 难度：0.4 特殊：本体0.1，出现时召唤1只狼
         o003 : 巨魔巫医（普通怪物） 难度：0.3 特殊：本体0.1，使用治疗技能，为队友提供百分比生命回复。
         o004 : 哥布林精英（精英怪物） 难度：0.7 俗称熊地精，头大无脑，但体型是普通哥布林的6-8倍，攻击力和生命值也成倍增加，具有高威胁度。
-        o005 : 树精（精英怪物） 难度：2.5 特殊：1.会周期性对玩家脚下制造延迟的范围伤害。2.会向一条直线射出藤曼，对沿途单位造成伤害并控制。3.持续吸取该房间玩家的生命和魔法值为自己补充。4.第一次因火焰进入元素异常时，取消3技能效果。受到1.5倍的火焰伤害。 
-
+        o005 : 树精（精英怪物） 难度：2.5 特殊：1.会周期性对玩家脚下制造延迟的范围伤害。2.会向一条直线射出藤曼，对沿途单位造成伤害并控制。3.持续吸取该房间玩家的生命和魔法值为自己补充。4.第一次因火焰进入元素异常时，取消3技能效果。受到1.5倍的火焰伤害。
     */
 
-    // 初始化BOSS系统
+    // 紧急穿越共通技能ID（须与 WE 物体编辑器中配置的技能原始ID一致）
+    call areaEmergency_SetEmergencyAbilityId('A07E')
+
+    // 初始化BOSS系统（BOSS 槽位已在第 8 步绑定）
     call BossSystem_InitBossSystem()
     call BossSystem_SetBossTypeId('nBO1')  // 占位符，在WE中配置实际BOSS单位ID
 
@@ -236,6 +318,7 @@ function InitForest takes nothing returns nothing
     // 祭坛配置（单位类型ID在WE中配置，商店上架物品由物体编辑器配置）
     call RewardAltar_SetAltarUnitTypeId('n000')  // 祭坛单位类型ID
 
+    call DebugLogger_Log(LOG_INFO, "[forest] InitForest done: chapter=" + I2S(FOREST_CHAPTER_ID) + " enter=" + GetAreaIdName(GetActiveEnter(FOREST_CHAPTER_ID)) + " boss=" + GetAreaIdName(GetBossArea()) + " slots=" + I2S(Slot_GetCount()))
 endfunction
 
 // Forest 关卡配置注册：在游戏初始化时调用
@@ -246,3 +329,4 @@ function InitForestConfig takes nothing returns nothing
 endfunction
 
 endlibrary
+#endif

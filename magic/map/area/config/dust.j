@@ -1,10 +1,9 @@
-#ifndef AREA_INCLUDED
-#define AREA_INCLUDED
+#ifndef DUST_INCLUDED
+#define DUST_INCLUDED
 #include "nncou\\magic\\map\\area\\core\\data.j"
 #include "nncou\\magic\\map\\area\\core\\enter.j"
 #include "nncou\\magic\\map\\area\\core\\exit.j"
 #include "nncou\\magic\\map\\area\\core\\monster_room.j"
-#endif
 /*
     Dust 关卡配置文件
 
@@ -27,28 +26,15 @@ endglobals
 // Dust 关卡初始化回调，由 ChapterManager.StartChapter 触发
 // TODO: 待填充具体的区域注册、邻接、出口、入口等配置
 function InitDust takes nothing returns nothing
-    // TODO: 注册区域
-    // call RegisterArea(DUST_A, gg_rct_Dust_A)
-
-    // TODO: 注册邻接关系
-
-    // TODO: 注册区域保护
-
-    // TODO: 注册出口
-
-    // TODO: 入口区域
-    // call AreaAddEnter(DUST_A)
-    // call RollActiveEnter(DUST_CHAPTER_ID)
-
-    // TODO: 诅咒起始区域
-
-    // TODO: 房间类型权重配置
-
-    // 执行房间类型分配（仅本次激活入口为安全房，其余候选入口正常分配）
-    // call InitAreaWithEnter(DUST_CHAPTER_ID)
-
-    // 初始化怪物房系统（必须在 InitArea 之后）
-    // call InitMonsterRoom()
+    // TODO: Step 3 起 Dust 也使用「逻辑网格 + 物理槽位」模型：
+    // 1) 在 WE 中摆放 Dust 的物理房，并用 areaSlot_RegisterPhysicalRoom 注册（每个关卡一套物理房）；
+    // 2) Grid_Init(rows, cols) / Grid_SetPruneChance / Grid_BuildEdges；
+    // 3) 循环 RegisterArea(i) 注册全部逻辑房；
+    // 4) AreaAddEnter / AreaAddPeripheralEnters 配置起点；
+    // 5) AreaAddBossCandidate + RollBossArea；
+    // 6) RegisterRoomType + SetRoomTypeWeight；
+    // 7) RollActiveEnter(DUST_CHAPTER_ID) + InitAreaWithEnter(DUST_CHAPTER_ID)；
+    // 8) InitAreaGuards / InitAreaExits / InitMonsterRoom。
 endfunction
 
 // Dust 关卡配置注册：在游戏初始化时调用
@@ -59,3 +45,4 @@ function InitDustConfig takes nothing returns nothing
 endfunction
 
 endlibrary
+#endif

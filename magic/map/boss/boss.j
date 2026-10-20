@@ -1,4 +1,6 @@
 #ifndef BOSS_SYSTEM_INCLUDED
+#define BOSS_SYSTEM_INCLUDED
+#include "nncou\\debug.j"
 /*
     BOSS系统模块
 
@@ -7,12 +9,12 @@
     2. BOSS状态管理
     3. BOSS死亡事件处理
 
+    BOSS 房使用 areaSlot 的预留槽位（地形 -1），不受普通槽位驱逐影响。
     纯框架+钩子模式：接口和钩子定义在此文件中，具体数值由WE/GUI填入。
-    BOSS的行动模式、技能、特效等在WE中实现。
 
-    依赖：areaData, areaEnter
+    依赖：areaData, areaEnter, DebugLogger
 */
-library BossSystem requires areaData, areaEnter
+library BossSystem requires areaData, areaEnter, DebugLogger
 
 globals
     private hashtable BossTable = InitHashtable()
@@ -56,7 +58,11 @@ endfunction
 
 // 获取BOSS生成位置（可覆写以自定义位置）
 private function GetBossSpawnPosition takes integer areaId returns location
-    return Location(GetRectCenterX(GetAreaRect(areaId)), GetRectCenterY(GetAreaRect(areaId)))
+    local rect r = GetAreaRect(areaId)
+    if r == null then
+        return null
+    endif
+    return Location(GetRectCenterX(r), GetRectCenterY(r))
 endfunction
 
 // ===== 内部：生成BOSS =====
@@ -66,22 +72,41 @@ private function DoSpawnBoss takes nothing returns nothing
     local integer typeId = LoadInteger(BossTable, 0, HT_BOSS_TYPE_ID)
     local location loc
     local unit boss
+    if bossArea < 0 then
+        call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss skipped: boss area not configured")
+        return
+    endif
     if typeId == 0 then
+        call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss skipped: boss type id not configured")
+        return
+    endif
+    // BOSS 必须绑定到预留槽位（InitBossSystem 通常已绑定，这里做幂等保护）
+    if Area_EnsureBound(bossArea) < 0 then
+        call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss failed: cannot bind boss area " + GetAreaIdName(bossArea))
         return
     endif
     set loc = GetBossSpawnPosition(bossArea)
+    if loc == null then
+        call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss failed: no spawn position for " + GetAreaIdName(bossArea))
+        return
+    endif
     set boss = CreateUnitAtLoc(Player(PLAYER_NEUTRAL_AGGRESSIVE), typeId, loc, 270.0)
+    call RemoveLocation(loc)
+    set loc = null
+    if boss == null then
+        call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss failed: CreateUnitAtLoc returned null")
+        return
+    endif
     call SaveBoolean(BossTable, 0, HT_BOSS_SPAWNED, true)
     call SaveUnitHandle(BossTable, 0, HT_BOSS_UNIT, boss)
     call SaveInteger(BossTable, 0, HT_BOSS_AREA, bossArea)
     call SaveBoolean(BossTable, 0, HT_BOSS_IS_DEAD, false)
     call SaveBoolean(BossTable, 0, HT_BOSS_FIRST_ATTACKED, false)
-    // 注册BOSS死亡事件
-    call TriggerRegisterUnitEvent(BossDeathTrig, boss, EVENT_UNIT_DEATH)
-    // 触发生成钩子
+    if BossDeathTrig != null then
+        call TriggerRegisterUnitEvent(BossDeathTrig, boss, EVENT_UNIT_DEATH)
+    endif
     call OnBossSpawn(boss)
-    call RemoveLocation(loc)
-    set loc = null
+    call DebugLogger_Log(LOG_INFO, "[boss] spawned in " + GetAreaIdName(bossArea) + " typeId=" + I2S(typeId))
     set boss = null
 endfunction
 
@@ -115,9 +140,16 @@ endfunction
 
 private function Trig_BossDeath takes nothing returns nothing
     local unit boss = GetDyingUnit()
+    local unit registered = LoadUnitHandle(BossTable, 0, HT_BOSS_UNIT)
+    if boss == null or registered == null or boss != registered then
+        set boss = null
+        set registered = null
+        return
+    endif
     call SaveBoolean(BossTable, 0, HT_BOSS_IS_DEAD, true)
     call OnBossDeath(boss)
     set boss = null
+    set registered = null
 endfunction
 
 // ===== 公开接口 =====
@@ -155,13 +187,36 @@ endfunction
 */
 public function InitBossSystem takes nothing returns nothing
     local integer bossArea = GetBossArea()
+    local rect bossRect
+    if bossArea < 0 then
+        call DebugLogger_Log(LOG_WARN, "[boss] InitBossSystem skipped: boss area not configured")
+        return
+    endif
+    // 确保 BOSS 逻辑房已绑定预留物理槽位
+    if Area_EnsureBound(bossArea) < 0 then
+        call DebugLogger_Log(LOG_WARN, "[boss] InitBossSystem failed: cannot bind boss area " + GetAreaIdName(bossArea))
+        return
+    endif
+    set bossRect = GetAreaRect(bossArea)
+    if bossRect == null then
+        call DebugLogger_Log(LOG_WARN, "[boss] InitBossSystem failed: boss rect is null")
+        return
+    endif
     // 创建BOSS房进入触发器
+    if BossEnterTrig != null then
+        call DestroyTrigger(BossEnterTrig)
+    endif
     set BossEnterTrig = CreateTrigger()
-    call TriggerRegisterEnterRectSimple(BossEnterTrig, GetAreaRect(bossArea))
+    call TriggerRegisterEnterRectSimple(BossEnterTrig, bossRect)
     call TriggerAddAction(BossEnterTrig, function Trig_PlayerEnterBossRoom)
     // 创建BOSS死亡触发器
+    if BossDeathTrig != null then
+        call DestroyTrigger(BossDeathTrig)
+    endif
     set BossDeathTrig = CreateTrigger()
     call TriggerAddAction(BossDeathTrig, function Trig_BossDeath)
+    call DebugLogger_Log(LOG_INFO, "[boss] InitBossSystem done: area=" + GetAreaIdName(bossArea))
+    set bossRect = null
 endfunction
 
 /*
@@ -228,11 +283,8 @@ endfunction
 // 供 ChapterManager 在关卡切换时调用
 function ResetBossSystem takes nothing returns nothing
     local unit boss = LoadUnitHandle(BossTable, 0, HT_BOSS_UNIT)
-    // 杀死并移除BOSS
+    // 直接移除BOSS：不要 KillUnit，避免在关卡重置时触发死亡回调
     if boss != null then
-        if not IsBossDead() then
-            call KillUnit(boss)
-        endif
         call RemoveUnit(boss)
     endif
     // 销毁触发器
@@ -244,6 +296,8 @@ function ResetBossSystem takes nothing returns nothing
         call DestroyTrigger(BossDeathTrig)
         set BossDeathTrig = null
     endif
+    // 清空本关状态（HT_BOSS_TYPE_ID 由下一关的 InitForest 重新设置）
+    call FlushChildHashtable(BossTable, 0)
     set boss = null
 endfunction
 
