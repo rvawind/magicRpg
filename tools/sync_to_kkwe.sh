@@ -23,8 +23,8 @@ map_rel() {
             printf '%s\n' "nncou/BossChargeSystem/BossChargeSystem.j" ;;
         core/nncou/BossChargeSystemInterface.j|core/nncou/BossChargeSystemInterface.cfg)
             printf '%s\n' "nncou/BossChargeSystem/${rel#core/nncou/}" ;;
-        # 仅工程侧使用，不同步
-        core/nncou/_tmp_update.py)
+        # 仅工程侧使用 / 文档，不同步
+        core/nncou/_tmp_update.py|*.md)
             return 1 ;;
         # core/** -> jass/**
         core/*)
