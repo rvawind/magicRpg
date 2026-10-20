@@ -60,11 +60,13 @@
 | 文件 | library | 作用 |
 |---|---|---|
 | `GetSkillDmg.j` | `NNCouInitSkillDmg` | 编译期用 Lua/`slk` 读技能数据，生成技能伤害函数 |
-| `FRO/PlayerMsg.j` | `FroMsg` | 消息框、GIF 消息；依赖 `BlizzardAPI` + `KKAPI` |
-| `FRO/RushSystem.j` | `RushSystem` | 波次刷怪：数量、种类、BOSS 波配置 |
+| `FRO/PlayerMsg.j` | `FroMsg` | FRO 专用：消息框、GIF 消息；依赖 `BlizzardAPI` + `KKAPI` |
+| `FRO/RushSystem.j` | `RushSystem` | FRO 专用：波次刷怪配置（未完成，见子目录 README） |
 | `check.j` | `CheckSync` | 用 DzAPI 同步收集各玩家上报值并校验一致性 |
 | `NNCouExtraAttr.j` | `ExtraAttr` | 旧版额外属性系统；与 `magic/extraAttr.j` 同名，仓库内没有显式 include 引用，实际维护以 `magic/extraAttr.j` 为准 |
 | `_tmp_update.py` | — | 工程侧临时脚本，不同步到 KKWE |
+
+`FRO/` 是 FRO 底图专用功能，不属于 NNCou 通用层；细节和遗留问题见 [`FRO/README.md`](FRO/README.md)。
 
 ## 依赖关系
 
