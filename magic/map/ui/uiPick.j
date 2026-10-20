@@ -1,6 +1,6 @@
 #ifndef UI_PICK_INCLUDED
 #define UI_PICK_INCLUDED
-#include "nncou\\BlizzardAPI.j"
+#include "BlizzardAPI.j"
 /*
     多选1 UI框架
 
