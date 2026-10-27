@@ -5,11 +5,15 @@
     BOSS系统模块
 
     负责：
-    1. 首个玩家进入BOSS房时生成BOSS
+    1. 首个玩家进入 BOSS 中转房时触发进入钩子
     2. BOSS状态管理
     3. BOSS死亡事件处理
 
-    BOSS 房使用 areaSlot 的预留槽位（地形 -1），不受普通槽位驱逐影响。
+    BOSS 中转房是普通逻辑房（开局随机选定，外观与普通安全房一致）：
+    - 它不占用预留物理槽位，而是和普通房间一样按地形从槽位池分配；
+    - 玩家进入后传送到别处的 BOSS 场地（由关卡逻辑/GUI 实现并调用 ForceSpawnBoss）；
+    - 因为物理房会被回收并重新绑定给其他逻辑房，进入判定必须按逻辑 ID（areaEnter 回调），
+      不能像旧版那样在初始化时把触发器绑在某个物理矩形上。
     纯框架+钩子模式：接口和钩子定义在此文件中，具体数值由WE/GUI填入。
 
     依赖：areaData, areaEnter, DebugLogger
@@ -28,10 +32,11 @@ globals
     private constant integer HT_BOSS_FIRST_ATTACKED = 5
 
     // 触发器
-    private trigger BossEnterTrig = null
     private trigger BossDeathTrig = null
     // BOSS死亡回调（供ChapterManager等外部模块注册，避免循环依赖）
     private trigger BossDeathCallback = null
+    // BOSS 战斗场地（可选）：由关卡配置注入；未设置时退回 BOSS 中转房中心
+    private rect BossArenaRect = null
 endglobals
 
 // ===== 钩子（private，可在 boss.j 内部覆写）=====
@@ -56,9 +61,20 @@ private function CanSpawnBoss takes nothing returns boolean
     return true
 endfunction
 
+// 首个玩家进入 BOSS 中转房时触发（可覆写）
+// 默认不做任何事：BOSS 场地在别处，应由关卡逻辑/GUI 把玩家传送到场地，
+// 再调用 BossSystem_ForceSpawnBoss() 生成 BOSS。诅咒倒计时开始前可在此直接 return。
+private function OnBossRoomEntered takes integer areaId returns nothing
+endfunction
+
 // 获取BOSS生成位置（可覆写以自定义位置）
+// 优先使用关卡注入的 BOSS 战斗场地；未设置时退回 BOSS 中转房中心
 private function GetBossSpawnPosition takes integer areaId returns location
-    local rect r = GetAreaRect(areaId)
+    local rect r
+    if BossArenaRect != null then
+        return Location(GetRectCenterX(BossArenaRect), GetRectCenterY(BossArenaRect))
+    endif
+    set r = GetAreaRect(areaId)
     if r == null then
         return null
     endif
@@ -80,8 +96,8 @@ private function DoSpawnBoss takes nothing returns nothing
         call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss skipped: boss type id not configured")
         return
     endif
-    // BOSS 必须绑定到预留槽位（InitBossSystem 通常已绑定，这里做幂等保护）
-    if Area_EnsureBound(bossArea) < 0 then
+    // 未配置独立战斗场地时，BOSS 生成在中转房内，需要先确保该房有物理槽位
+    if BossArenaRect == null and Area_EnsureBound(bossArea) < 0 then
         call DebugLogger_Log(LOG_WARN, "[boss] DoSpawnBoss failed: cannot bind boss area " + GetAreaIdName(bossArea))
         return
     endif
@@ -116,23 +132,20 @@ public function IsBossSpawned takes nothing returns boolean
     return LoadBoolean(BossTable, 0, HT_BOSS_SPAWNED)
 endfunction
 
-// ===== 内部：玩家进入BOSS房触发 =====
+// ===== 内部：玩家进入 BOSS 中转房触发（按逻辑 ID）=====
 
-private function Trig_PlayerEnterBossRoom takes nothing returns nothing
-    local unit u = GetEnteringUnit()
-    if u == null or not IsUnitType(u, UNIT_TYPE_HERO) then
+private function Trig_AreaEnterHook takes nothing returns nothing
+    local integer areaId = GetAreaEnterCallbackArea()
+    local unit u = GetAreaEnterCallbackUnit()
+    if u == null or areaId < 0 or areaId != GetBossArea() then
         set u = null
         return
     endif
-    if IsBossSpawned() then
+    if IsBossSpawned() or not CanSpawnBoss() then
         set u = null
         return
     endif
-    if not CanSpawnBoss() then
-        set u = null
-        return
-    endif
-    call DoSpawnBoss()
+    call OnBossRoomEntered(areaId)
     set u = null
 endfunction
 
@@ -180,6 +193,18 @@ public function SetBossTypeId takes integer typeId returns nothing
 endfunction
 
 /*
+    [BossSystem_SetBossArenaRect]
+    title = "设置BOSS战斗场地"
+    description = "设置BOSS的生成/战斗场地为${矩形}；不设置则生成在BOSS中转房中心"
+    category = TC_FRO
+    [[.args]]
+    type = rect
+*/
+public function SetBossArenaRect takes rect r returns nothing
+    set BossArenaRect = r
+endfunction
+
+/*
     [BossSystem_InitBossSystem]
     title = "初始化BOSS系统"
     description = "初始化BOSS系统，必须在InitArea之后调用"
@@ -187,36 +212,19 @@ endfunction
 */
 public function InitBossSystem takes nothing returns nothing
     local integer bossArea = GetBossArea()
-    local rect bossRect
     if bossArea < 0 then
         call DebugLogger_Log(LOG_WARN, "[boss] InitBossSystem skipped: boss area not configured")
         return
     endif
-    // 确保 BOSS 逻辑房已绑定预留物理槽位
-    if Area_EnsureBound(bossArea) < 0 then
-        call DebugLogger_Log(LOG_WARN, "[boss] InitBossSystem failed: cannot bind boss area " + GetAreaIdName(bossArea))
-        return
-    endif
-    set bossRect = GetAreaRect(bossArea)
-    if bossRect == null then
-        call DebugLogger_Log(LOG_WARN, "[boss] InitBossSystem failed: boss rect is null")
-        return
-    endif
-    // 创建BOSS房进入触发器
-    if BossEnterTrig != null then
-        call DestroyTrigger(BossEnterTrig)
-    endif
-    set BossEnterTrig = CreateTrigger()
-    call TriggerRegisterEnterRectSimple(BossEnterTrig, bossRect)
-    call TriggerAddAction(BossEnterTrig, function Trig_PlayerEnterBossRoom)
-    // 创建BOSS死亡触发器
+    // 不需要在初始化时绑定物理槽位：BOSS 中转房按需绑定，进入判定走逻辑 ID 回调
     if BossDeathTrig != null then
         call DestroyTrigger(BossDeathTrig)
     endif
     set BossDeathTrig = CreateTrigger()
     call TriggerAddAction(BossDeathTrig, function Trig_BossDeath)
-    call DebugLogger_Log(LOG_INFO, "[boss] InitBossSystem done: area=" + GetAreaIdName(bossArea))
-    set bossRect = null
+    // 按逻辑 ID 监听英雄进入（物理房可能被回收并绑定给其他逻辑房）
+    call SetAreaEnterCallback(function Trig_AreaEnterHook)
+    call DebugLogger_Log(LOG_INFO, "[boss] InitBossSystem done: area=" + GetAreaIdName(bossArea) + " (logical entry hook)")
 endfunction
 
 /*
@@ -288,10 +296,6 @@ function ResetBossSystem takes nothing returns nothing
         call RemoveUnit(boss)
     endif
     // 销毁触发器
-    if BossEnterTrig != null then
-        call DestroyTrigger(BossEnterTrig)
-        set BossEnterTrig = null
-    endif
     if BossDeathTrig != null then
         call DestroyTrigger(BossDeathTrig)
         set BossDeathTrig = null

@@ -20,7 +20,7 @@
 
     依赖：areaData, areaEnter, areaExit, areaSlot, MonsterGroup, ChapterTimer, RewardAltar, DebugLogger
 */
-library areaMonsterRoom requires areaData, areaEnter, areaExit, areaSlot, MonsterGroup, ChapterTimer, RewardAltar, DebugLogger
+library areaMonsterRoom requires areaData, areaEnter, areaExit, areaSlot, MonsterGroup, ChapterTimer, RewardAltar, DebugLogger, NNCouPoint
 
 globals
     // 逻辑房数据（parent key = logicalId）
@@ -34,6 +34,15 @@ globals
 
     private constant real ROOM_SPAWN_DELAY = 0.50
     private constant real ROOM_SPAWN_INSET = 128.00
+    // 刷怪点必须是可站立位置：先随机取样 N 次，失败后按网格扫描兜底
+    private constant integer ROOM_SPAWN_WALKABLE_TRIES = 24
+    private constant real ROOM_SPAWN_SCAN_STEP = 64.00
+    // 网格扫描上限：NNCIsWalkAble 每次要枚举物品，不能无上限地全房扫描（字节码上限）
+    private constant integer ROOM_SPAWN_SCAN_MAX = 256
+    // 单个计时器回调最多刷几只：每只最坏 24+256 次 NNCIsWalkAble，
+    // 一次刷满 cap 会在极端房间逼近单线程字节码上限，改为分批重新武装计时器
+    private constant integer ROOM_SPAWN_BATCH = 2
+    private constant real ROOM_SPAWN_BATCH_DELAY = 0.03
     private constant integer ROOM_DEFAULT_MONSTER_CAP = 10
 
     // 逻辑房子键（parent key = logicalId）
@@ -185,11 +194,16 @@ endfunction
 
 // ===== 内部：随机散布位置 =====
 
+// 返回房间内一个可站立的随机点；找不到可站立点返回 null
 private function GetRandomPointInRect takes rect r returns location
     local real minX = GetRectMinX(r) + ROOM_SPAWN_INSET
     local real maxX = GetRectMaxX(r) - ROOM_SPAWN_INSET
     local real minY = GetRectMinY(r) + ROOM_SPAWN_INSET
     local real maxY = GetRectMaxY(r) - ROOM_SPAWN_INSET
+    local integer tries = 0
+    local integer scanned = 0
+    local real x
+    local real y
     if minX > maxX then
         set minX = GetRectMinX(r)
         set maxX = GetRectMaxX(r)
@@ -198,7 +212,36 @@ private function GetRandomPointInRect takes rect r returns location
         set minY = GetRectMinY(r)
         set maxY = GetRectMaxY(r)
     endif
-    return Location(GetRandomReal(minX, maxX), GetRandomReal(minY, maxY))
+
+    // 1) 随机取样：NNCIsWalkAble 用隐藏物品试放，能同时识别悬崖/水面（地形路径）
+    //    和树木/岩石（可破坏物）——IsTerrainPathable 只看地形，看不到可破坏物。
+    //    注意 IsTerrainPathable 的返回值是反的（true = 路径关闭 = 不可通行），不要直接当"可走"用。
+    loop
+        exitwhen tries >= ROOM_SPAWN_WALKABLE_TRIES
+        set x = GetRandomReal(minX, maxX)
+        set y = GetRandomReal(minY, maxY)
+        if NNCIsWalkAble(x, y) then
+            return Location(x, y)
+        endif
+        set tries = tries + 1
+    endloop
+
+    // 2) 兜底：按网格扫描，避免房间可站立区域很小时一直取不到点
+    set y = minY
+    loop
+        exitwhen y > maxY or scanned >= ROOM_SPAWN_SCAN_MAX
+        set x = minX
+        loop
+            exitwhen x > maxX or scanned >= ROOM_SPAWN_SCAN_MAX
+            if NNCIsWalkAble(x, y) then
+                return Location(x, y)
+            endif
+            set scanned = scanned + 1
+            set x = x + ROOM_SPAWN_SCAN_STEP
+        endloop
+        set y = y + ROOM_SPAWN_SCAN_STEP
+    endloop
+    return null
 endfunction
 
 // ===== 内部：生成单只怪物 =====
@@ -217,6 +260,11 @@ private function SpawnSingleMonster takes integer areaId, integer monsterId retu
         return
     endif
     set loc = GetRandomPointInRect(r)
+    if loc == null then
+        // 整个房间找不到可站立点：仍然生成（保持怪物计数/清房判定正确），但记录异常
+        call DebugLogger_Log(LOG_WARN, "[room] no walkable spawn point in " + GetAreaIdName(areaId) + ", fallback to rect center")
+        set loc = Location(GetRectCenterX(r), GetRectCenterY(r))
+    endif
     set u = CreateUnitAtLoc(Player(PLAYER_NEUTRAL_AGGRESSIVE), monsterId, loc, GetRandomReal(0, 360))
     call RemoveLocation(loc)
     set loc = null
@@ -321,10 +369,12 @@ endfunction
 
 private function Trig_SpawnDelay takes nothing returns nothing
     local timer t = GetExpiredTimer()
+    local timer nt
     local integer tid = GetHandleId(t)
     local integer areaId
     local integer groupId
     local integer cap
+    local integer slots
     local integer entries
     local integer cursor
     local integer remain
@@ -379,8 +429,22 @@ private function Trig_SpawnDelay takes nothing returns nothing
         return
     endif
 
+    // 跳过已耗尽的池条目：之后 remain > 0 就等价于「池里还有怪可刷」
     loop
-        exitwhen spawned >= cap or cursor >= entries
+        exitwhen remain > 0 or cursor >= entries
+        set cursor = cursor + 1
+        if cursor < entries then
+            set remain = MonsterGroup_GetEntryMonsterCount(groupId, cursor)
+        endif
+    endloop
+
+    // 本批还能刷几只 = 房间上限 - 场上存活；本批最多 ROOM_SPAWN_BATCH 只
+    set slots = cap - GetAreaAliveMonsterCount(areaId)
+    if slots < 0 then
+        set slots = 0
+    endif
+    loop
+        exitwhen spawned >= slots or spawned >= ROOM_SPAWN_BATCH or cursor >= entries
         if remain > 0 then
             set monsterId = MonsterGroup_GetEntryMonsterId(groupId, cursor)
             call SpawnSingleMonster(areaId, monsterId)
@@ -397,8 +461,16 @@ private function Trig_SpawnDelay takes nothing returns nothing
     call SaveInteger(RoomTable, areaId, HT_SPAWN_REMAIN, remain)
     call SetRoomState(areaId, ROOM_STATE_ACTIVE)
     call DebugLogger_Log(LOG_TRACE, "[room] SpawnDelay area " + GetAreaIdName(areaId) + " spawned=" + I2S(spawned) + "/" + I2S(cap) + " cursor=" + I2S(cursor) + "/" + I2S(entries) + " remain=" + I2S(remain) + " state->ACTIVE")
-    if spawned <= 0 and not IsAreaClearedThisGame(areaId) and LoadInteger(RoomTable, areaId, HT_PLAYER_COUNT) > 0 then
-        call DebugLogger_Log(LOG_WARN, "[room] spawn produced 0 monsters: " + GetAreaIdName(areaId) + " cursor=" + I2S(cursor) + "/" + I2S(entries) + " remain=" + I2S(remain) + " alive=" + I2S(GetAreaAliveMonsterCount(areaId)) + " (pool exhausted or cursor not rewound)")
+    if spawned <= 0 and slots > 0 and remain > 0 and not IsAreaClearedThisGame(areaId) and LoadInteger(RoomTable, areaId, HT_PLAYER_COUNT) > 0 then
+        call DebugLogger_Log(LOG_WARN, "[room] spawn produced 0 monsters: " + GetAreaIdName(areaId) + " cursor=" + I2S(cursor) + "/" + I2S(entries) + " remain=" + I2S(remain) + " alive=" + I2S(GetAreaAliveMonsterCount(areaId)) + " (pool has monsters but none spawned)")
+    endif
+    // 本批刷满且池里还有怪、房间还有空位：短延迟后继续下一批，避免单线程越过字节码上限
+    if spawned >= ROOM_SPAWN_BATCH and (remain > 0 or cursor + 1 < entries) and GetAreaAliveMonsterCount(areaId) < cap and LoadInteger(RoomTable, areaId, HT_PLAYER_COUNT) > 0 then
+        set nt = CreateTimer()
+        call SaveInteger(RoomTimerTable, GetHandleId(nt), 0, areaId)
+        call SaveTimerHandle(RoomTable, areaId, HT_SPAWN_TIMER, nt)
+        call TimerStart(nt, ROOM_SPAWN_BATCH_DELAY, false, function Trig_SpawnDelay)
+        set nt = null
     endif
     call FlushChildHashtable(RoomTimerTable, tid)
     call DestroyTimer(t)

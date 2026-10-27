@@ -36,6 +36,11 @@ globals
 
     private timer IdleSweepTimer = null
     private constant real IDLE_SWEEP_INTERVAL = 1.00
+
+    // 英雄进入逻辑房回调（供 BossSystem 等外部系统注册，避免核心模块反向依赖）
+    private trigger AreaEnterCallback = null
+    private integer AreaEnterCallbackArea = -1
+    private unit AreaEnterCallbackUnit = null
 endglobals
 
 // 供其他系统读取：获取玩家当前所在区域矩形
@@ -61,6 +66,29 @@ endfunction
 function SetPlayerCurrentAreaRect takes player whichPlayer, rect areaRect returns nothing
     call SaveRectHandle(AreaEnterTable, GetHandleId(whichPlayer), HT_PLAYER_AREA_RECT, areaRect)
     call SaveBoolean(AreaEnterTable, GetHandleId(whichPlayer), HT_PLAYER_LEAVE_ALLOWED, false)
+endfunction
+
+// ===== 进入回调 =====
+
+// 注册「英雄进入某逻辑房」回调。回调内用下面两个 getter 读取上下文。
+// 物理房会被回收并绑定给其他逻辑房，因此依赖「物理矩形」的触发逻辑不可靠；
+// 需要按房间身份判定的系统（如 BOSS 中转房）应注册此回调。
+function SetAreaEnterCallback takes code c returns nothing
+    if AreaEnterCallback != null then
+        call DestroyTrigger(AreaEnterCallback)
+    endif
+    set AreaEnterCallback = CreateTrigger()
+    call TriggerAddAction(AreaEnterCallback, c)
+endfunction
+
+// 回调上下文：当前进入的逻辑房 ID（-1 表示无效）
+function GetAreaEnterCallbackArea takes nothing returns integer
+    return AreaEnterCallbackArea
+endfunction
+
+// 回调上下文：触发进入的英雄
+function GetAreaEnterCallbackUnit takes nothing returns unit
+    return AreaEnterCallbackUnit
 endfunction
 
 private function GetBoundSlotId takes nothing returns integer
@@ -187,6 +215,12 @@ private function Trig_AreaEnterActions takes nothing returns nothing
     set r = Slot_GetSlotRegion(slotId)
     call SetPlayerCurrentAreaRect(p, r)
     call DebugLogger_Log(LOG_TRACE, "[enter] " + GetPlayerName(p) + " entered " + GetAreaIdName(areaId) + " slot=" + I2S(slotId))
+    if AreaEnterCallback != null then
+        set AreaEnterCallbackArea = areaId
+        set AreaEnterCallbackUnit = u
+        call TriggerExecute(AreaEnterCallback)
+        set AreaEnterCallbackUnit = null
+    endif
     set u = null
     set p = null
     set r = null

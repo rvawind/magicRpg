@@ -268,7 +268,8 @@ function GetAreaIdName takes integer areaId returns string
 endfunction
 
 // 确保逻辑房已绑定物理槽位；返回槽位ID，失败返回 -1
-// BOSS 房使用预留槽位，其余按地形从槽位池分配
+// BOSS 中转房也是普通逻辑房，与其他房间一样按地形从槽位池分配
+// （打 BOSS 的场地在别处，由关卡逻辑/LGUI 负责传送）
 function Area_EnsureBound takes integer areaId returns integer
     local integer slotId
     local integer terrain
@@ -278,9 +279,6 @@ function Area_EnsureBound takes integer areaId returns integer
     set slotId = Slot_GetSlotOf(areaId)
     if slotId >= 0 then
         return slotId
-    endif
-    if areaId == GetBossArea() then
-        return Slot_AcquireBoss(areaId)
     endif
     set terrain = GetAreaTerrain(areaId)
     if terrain < 0 then

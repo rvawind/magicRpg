@@ -9,7 +9,9 @@
     - 物理资源（区域矩形、4 个门洞矩形、触发器、怪物、祭坛、特效）由本模块按需绑定与解绑。
 
     物理房间是 WE 中手工摆放的固定矩形，注册后永不销毁。
-    槽位按地形分组（推荐 4 种地形 × 每地形 5 个 = 20 个，另加 1 个 BOSS 预留槽）。
+    槽位按地形分组（推荐 4 种地形 × 每地形 5 个 = 20 个）。
+    BOSS 中转房是普通逻辑房，使用普通槽位；本模块仍保留「专用槽位」（地形 -1）能力，
+    供其他关卡按需使用，但当前 Forest 关卡不使用。
     逻辑房只记住自己属于哪种地形；绑定时从同地形的空闲槽位中选，
     优先复用上次使用的物理房（粘性绑定）。
 
@@ -335,7 +337,7 @@ endfunction
 /*
     [areaSlot_RegisterPhysicalRoom]
     title = "注册物理房间"
-    description = "注册地形为${地形}的固定物理房间；区域${区域矩形}，四个门洞${上}/${下}/${左}/${右}（无门可传null）；地形传 -1 表示 BOSS 预留槽"
+    description = "注册地形为${地形}的固定物理房间；区域${区域矩形}，四个门洞${上}/${下}/${左}/${右}（无门可传null）；地形传 -1 表示专用槽位（不参与普通分配/驱逐）"
     category = TC_FRO
     returns = integer
     [[.args]]
@@ -476,7 +478,8 @@ function Slot_Acquire takes integer logicalId, integer terrain returns integer
     return slotId
 endfunction
 
-// 为 BOSS 逻辑房分配预留槽位
+// 为逻辑房分配专用槽位（地形 -1）。
+// 当前 Forest 关卡的 BOSS 中转房使用普通槽位，因此不调用本函数；保留给其他关卡。
 function Slot_AcquireBoss takes integer logicalId returns integer
     local integer v = LoadInteger(SlotGlobalTable, 0, HT_BOSS_SLOT)
     local integer slotId

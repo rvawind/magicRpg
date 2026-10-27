@@ -1,3 +1,5 @@
 .claude/
 .vscode/
 *.w3x
+tools/precompile_check/out/
+__pycache__/

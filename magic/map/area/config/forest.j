@@ -24,16 +24,29 @@
 
     物理层（WE 中手工摆放，与逻辑坐标完全无关）：
     - 4 种地形 × 每地形 5 个普通物理房 = 20 个槽位；
-    - 1 个 BOSS 预留槽位，只绑定 BOSS 逻辑房，不参与普通分配/驱逐。
-    - 每个物理房需要 1 个区域矩形；门洞矩形由本文件按房间边缘自动生成。
-      （如需手工摆放门洞，可把 MakeDoorRect 替换为对应的 gg_rct 引用。）
+    - BOSS 中转房也是普通逻辑房，和普通房间一样按地形从这 20 个槽位中分配；
+    - 每个物理房需要 1 个区域矩形（房间活动范围）。
 
-    需要的 WE 区域矩形变量（共 21 个）：
-      gg_rct_FR_A1 .. gg_rct_FR_A5   // 地形 0
-      gg_rct_FR_B1 .. gg_rct_FR_B5   // 地形 1
-      gg_rct_FR_C1 .. gg_rct_FR_C5   // 地形 2
-      gg_rct_FR_D1 .. gg_rct_FR_D5   // 地形 3
-      gg_rct_FR_BOSS                 // BOSS 预留槽
+    门洞（出口不在边中点，因此用模板）：
+    - 每种地形画 4 个门洞矩形，放在该地形的第 1 个房间里（A1 / B1 / C1 / D1），
+      精确覆盖实际的 4 个缺口；
+    - 本文件按「模板门洞相对参考房间中心」的偏移，复制到同地形其余 4 个房间；
+    - 前提：同地形的 5 个房间布局与矩形尺寸完全一致。
+
+    闭门障碍物（网格里没有邻居的方向要封住洞口）：
+    - 把该方向的树木/岩石等「可破坏物」摆进对应的门洞模板矩形（A1/B1/C1/D1 内）；
+    - 初始化时 areaExit 读取其类型与相对方位并删除原件，绑定时按逻辑房是否有邻居重建/留空；
+    - 只支持可破坏物（纯装饰物 doodad 触发器读不到）；角度/缩放读不到，重建统一 0°、1.0 缩放、变体随机。
+
+    需要的 WE 区域矩形变量（共 20 + 16 = 36 个）：
+      gg_rct_FR_A1 .. gg_rct_FR_A5     // 地形 0 房间
+      gg_rct_FR_B1 .. gg_rct_FR_B5     // 地形 1 房间
+      gg_rct_FR_C1 .. gg_rct_FR_C5     // 地形 2 房间
+      gg_rct_FR_D1 .. gg_rct_FR_D5     // 地形 3 房间
+      gg_rct_FR_A_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 0 门洞模板（画在 A1 内）
+      gg_rct_FR_B_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 1 门洞模板（画在 B1 内）
+      gg_rct_FR_C_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 2 门洞模板（画在 C1 内）
+      gg_rct_FR_D_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 3 门洞模板（画在 D1 内）
 
     槽位生命周期：
     - 进入某逻辑房前由 Area_EnsureBound 分配同地形槽位（优先粘性复用）；
@@ -63,11 +76,34 @@ globals
 
     // 物理房间只注册一次（跨关卡保留）
     private boolean PhysicalRoomsRegistered = false
+
+    // 门洞模板：索引 = terrain * 4 + dir，取值为 WE 中画在参考房间里的矩形
+    private rect array DoorTemplate
 endglobals
 
 // ===== 物理层：门洞矩形 =====
 
-// 按房间区域边缘生成门洞矩形（方向使用 areaGrid 的 DIR_* 常量）
+// 读取某地形某方向的门洞模板；未配置返回 null
+private function GetTerrainDoorTemplate takes integer terrain, integer dir returns rect
+    if terrain < 0 or terrain > TERRAIN_D or dir < 0 or dir > 3 then
+        return null
+    endif
+    return DoorTemplate[terrain * 4 + dir]
+endfunction
+
+// 把模板门洞按「参考房间中心 -> 目标房间中心」的偏移复制到目标房间
+// 模板尺寸保持不变；必须创建新的 rect 句柄（同一句柄不能登记给多个槽位）
+private function MakeDoorRectFromTemplate takes rect roomRect, rect refRoom, rect template returns rect
+    local real dx = GetRectCenterX(template) - GetRectCenterX(refRoom)
+    local real dy = GetRectCenterY(template) - GetRectCenterY(refRoom)
+    local real halfW = (GetRectMaxX(template) - GetRectMinX(template)) / 2.0
+    local real halfH = (GetRectMaxY(template) - GetRectMinY(template)) / 2.0
+    local real cx = GetRectCenterX(roomRect) + dx
+    local real cy = GetRectCenterY(roomRect) + dy
+    return Rect(cx - halfW, cy - halfH, cx + halfW, cy + halfH)
+endfunction
+
+// 按房间区域边缘生成门洞矩形（没有模板时的兜底；方向使用 areaGrid 的 DIR_* 常量）
 private function MakeDoorRect takes rect r, integer dir returns rect
     local real minX = GetRectMinX(r)
     local real maxX = GetRectMaxX(r)
@@ -85,13 +121,42 @@ private function MakeDoorRect takes rect r, integer dir returns rect
     return Rect(maxX - DOOR_DEPTH, cy - DOOR_HALF_WIDTH, maxX, cy + DOOR_HALF_WIDTH)
 endfunction
 
-// 注册一个物理房：区域矩形必填，4 个门洞自动生成
-private function RegisterRoomWithAutoDoors takes integer terrain, rect r returns nothing
+// 登记某地形的 4 个门洞模板：面积内的可破坏物会被 areaExit 读取为「闭门障碍物」模板
+// 读取后原件被删除，之后按逻辑房是否有该方向的邻居决定重建或留空
+private function RegisterDoorDecorTemplates takes integer terrain returns nothing
+    local integer dir = 0
+    loop
+        exitwhen dir >= 4
+        call RegisterDoorDecorTemplate(terrain, dir, GetTerrainDoorTemplate(terrain, dir))
+        set dir = dir + 1
+    endloop
+endfunction
+
+// 注册一个物理房：区域矩形必填
+// 门洞优先用该地形的模板（相对参考房间偏移复制）；模板缺失时退回按边缘居中生成
+private function RegisterRoomWithDoors takes integer terrain, rect r, rect refRoom returns nothing
+    local rect up = GetTerrainDoorTemplate(terrain, DIR_UP)
+    local rect down = GetTerrainDoorTemplate(terrain, DIR_DOWN)
+    local rect left = GetTerrainDoorTemplate(terrain, DIR_LEFT)
+    local rect right = GetTerrainDoorTemplate(terrain, DIR_RIGHT)
     if r == null then
         call DebugLogger_Log(LOG_WARN, "[forest] physical room skipped: null region, terrain=" + I2S(terrain))
+        set up = null
+        set down = null
+        set left = null
+        set right = null
         return
     endif
-    call areaSlot_RegisterPhysicalRoom(terrain, r, MakeDoorRect(r, DIR_UP), MakeDoorRect(r, DIR_DOWN), MakeDoorRect(r, DIR_LEFT), MakeDoorRect(r, DIR_RIGHT))
+    if up != null and down != null and left != null and right != null and refRoom != null then
+        call areaSlot_RegisterPhysicalRoom(terrain, r, MakeDoorRectFromTemplate(r, refRoom, up), MakeDoorRectFromTemplate(r, refRoom, down), MakeDoorRectFromTemplate(r, refRoom, left), MakeDoorRectFromTemplate(r, refRoom, right))
+    else
+        call DebugLogger_Log(LOG_WARN, "[forest] door template missing for terrain " + I2S(terrain) + ", fallback to centered doors")
+        call areaSlot_RegisterPhysicalRoom(terrain, r, MakeDoorRect(r, DIR_UP), MakeDoorRect(r, DIR_DOWN), MakeDoorRect(r, DIR_LEFT), MakeDoorRect(r, DIR_RIGHT))
+    endif
+    set up = null
+    set down = null
+    set left = null
+    set right = null
 endfunction
 
 // ===== 槽位钩子 =====
@@ -158,36 +223,57 @@ private function InitForestPhysicalRooms takes nothing returns nothing
     endif
     set PhysicalRoomsRegistered = true
 
-    // 地形 0
-    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A1)
-    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A2)
-    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A3)
-    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A4)
-    call RegisterRoomWithAutoDoors(TERRAIN_A, gg_rct_FR_A5)
+    // 门洞模板：每种地形 4 个，画在该地形的第 1 个房间（A1/B1/C1/D1）内
+    set DoorTemplate[TERRAIN_A * 4 + DIR_UP] = gg_rct_FR_A_DOOR_UP
+    set DoorTemplate[TERRAIN_A * 4 + DIR_DOWN] = gg_rct_FR_A_DOOR_DOWN
+    set DoorTemplate[TERRAIN_A * 4 + DIR_LEFT] = gg_rct_FR_A_DOOR_LEFT
+    set DoorTemplate[TERRAIN_A * 4 + DIR_RIGHT] = gg_rct_FR_A_DOOR_RIGHT
+    set DoorTemplate[TERRAIN_B * 4 + DIR_UP] = gg_rct_FR_B_DOOR_UP
+    set DoorTemplate[TERRAIN_B * 4 + DIR_DOWN] = gg_rct_FR_B_DOOR_DOWN
+    set DoorTemplate[TERRAIN_B * 4 + DIR_LEFT] = gg_rct_FR_B_DOOR_LEFT
+    set DoorTemplate[TERRAIN_B * 4 + DIR_RIGHT] = gg_rct_FR_B_DOOR_RIGHT
+    set DoorTemplate[TERRAIN_C * 4 + DIR_UP] = gg_rct_FR_C_DOOR_UP
+    set DoorTemplate[TERRAIN_C * 4 + DIR_DOWN] = gg_rct_FR_C_DOOR_DOWN
+    set DoorTemplate[TERRAIN_C * 4 + DIR_LEFT] = gg_rct_FR_C_DOOR_LEFT
+    set DoorTemplate[TERRAIN_C * 4 + DIR_RIGHT] = gg_rct_FR_C_DOOR_RIGHT
+    set DoorTemplate[TERRAIN_D * 4 + DIR_UP] = gg_rct_FR_D_DOOR_UP
+    set DoorTemplate[TERRAIN_D * 4 + DIR_DOWN] = gg_rct_FR_D_DOOR_DOWN
+    set DoorTemplate[TERRAIN_D * 4 + DIR_LEFT] = gg_rct_FR_D_DOOR_LEFT
+    set DoorTemplate[TERRAIN_D * 4 + DIR_RIGHT] = gg_rct_FR_D_DOOR_RIGHT
 
-    // 地形 1
-    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B1)
-    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B2)
-    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B3)
-    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B4)
-    call RegisterRoomWithAutoDoors(TERRAIN_B, gg_rct_FR_B5)
+    // 登记门洞模板（供 areaExit 读取闭门障碍物；在 InitAreaExits 时捕获）
+    call RegisterDoorDecorTemplates(TERRAIN_A)
+    call RegisterDoorDecorTemplates(TERRAIN_B)
+    call RegisterDoorDecorTemplates(TERRAIN_C)
+    call RegisterDoorDecorTemplates(TERRAIN_D)
 
-    // 地形 2
-    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C1)
-    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C2)
-    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C3)
-    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C4)
-    call RegisterRoomWithAutoDoors(TERRAIN_C, gg_rct_FR_C5)
+    // 地形 0（参考房间 A1）
+    call RegisterRoomWithDoors(TERRAIN_A, gg_rct_FR_A1, gg_rct_FR_A1)
+    call RegisterRoomWithDoors(TERRAIN_A, gg_rct_FR_A2, gg_rct_FR_A1)
+    call RegisterRoomWithDoors(TERRAIN_A, gg_rct_FR_A3, gg_rct_FR_A1)
+    call RegisterRoomWithDoors(TERRAIN_A, gg_rct_FR_A4, gg_rct_FR_A1)
+    call RegisterRoomWithDoors(TERRAIN_A, gg_rct_FR_A5, gg_rct_FR_A1)
 
-    // 地形 3
-    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D1)
-    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D2)
-    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D3)
-    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D4)
-    call RegisterRoomWithAutoDoors(TERRAIN_D, gg_rct_FR_D5)
+    // 地形 1（参考房间 B1）
+    call RegisterRoomWithDoors(TERRAIN_B, gg_rct_FR_B1, gg_rct_FR_B1)
+    call RegisterRoomWithDoors(TERRAIN_B, gg_rct_FR_B2, gg_rct_FR_B1)
+    call RegisterRoomWithDoors(TERRAIN_B, gg_rct_FR_B3, gg_rct_FR_B1)
+    call RegisterRoomWithDoors(TERRAIN_B, gg_rct_FR_B4, gg_rct_FR_B1)
+    call RegisterRoomWithDoors(TERRAIN_B, gg_rct_FR_B5, gg_rct_FR_B1)
 
-    // BOSS 预留槽（地形 -1）
-    call RegisterRoomWithAutoDoors(-1, gg_rct_FR_BOSS)
+    // 地形 2（参考房间 C1）
+    call RegisterRoomWithDoors(TERRAIN_C, gg_rct_FR_C1, gg_rct_FR_C1)
+    call RegisterRoomWithDoors(TERRAIN_C, gg_rct_FR_C2, gg_rct_FR_C1)
+    call RegisterRoomWithDoors(TERRAIN_C, gg_rct_FR_C3, gg_rct_FR_C1)
+    call RegisterRoomWithDoors(TERRAIN_C, gg_rct_FR_C4, gg_rct_FR_C1)
+    call RegisterRoomWithDoors(TERRAIN_C, gg_rct_FR_C5, gg_rct_FR_C1)
+
+    // 地形 3（参考房间 D1）
+    call RegisterRoomWithDoors(TERRAIN_D, gg_rct_FR_D1, gg_rct_FR_D1)
+    call RegisterRoomWithDoors(TERRAIN_D, gg_rct_FR_D2, gg_rct_FR_D1)
+    call RegisterRoomWithDoors(TERRAIN_D, gg_rct_FR_D3, gg_rct_FR_D1)
+    call RegisterRoomWithDoors(TERRAIN_D, gg_rct_FR_D4, gg_rct_FR_D1)
+    call RegisterRoomWithDoors(TERRAIN_D, gg_rct_FR_D5, gg_rct_FR_D1)
 
     call Slot_SetAcquireHook(function OnSlotAcquire)
     call Slot_SetReleaseHook(function OnSlotRelease)
@@ -278,16 +364,12 @@ function InitForest takes nothing returns nothing
     // 7) 执行房间类型/地形分配（仅本次激活入口为入口房）
     call InitAreaWithEnter(FOREST_CHAPTER_ID)
 
-    // 8) 预绑定 BOSS 逻辑房到预留槽位
-    if Area_EnsureBound(GetBossArea()) < 0 then
-        call DebugLogger_Log(LOG_WARN, "[forest] cannot bind boss area " + GetAreaIdName(GetBossArea()))
-    endif
-
-    // 9) 物理槽位常驻触发器（必须在物理房注册之后）
+    // 8) 物理槽位常驻触发器（必须在物理房注册之后）
+    //    BOSS 中转房不预绑定：它和普通逻辑房一样，玩家接近时才分配物理槽位
     call InitAreaGuards()
     call InitAreaExits()
 
-    // 10) 怪物组与怪物房（必须在 InitAreaWithEnter 之后）
+    // 9) 怪物组与怪物房（必须在 InitAreaWithEnter 之后）
     call InitForestMonsterGroups()
     call InitMonsterRoom()
 
@@ -304,7 +386,7 @@ function InitForest takes nothing returns nothing
     // 紧急穿越共通技能ID（须与 WE 物体编辑器中配置的技能原始ID一致）
     call areaEmergency_SetEmergencyAbilityId('A07E')
 
-    // 初始化BOSS系统（BOSS 槽位已在第 8 步绑定）
+    // 初始化BOSS系统（按逻辑 ID 监听进入 BOSS 中转房）
     call BossSystem_InitBossSystem()
     call BossSystem_SetBossTypeId('nBO1')  // 占位符，在WE中配置实际BOSS单位ID
 

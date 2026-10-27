@@ -153,8 +153,13 @@ endfunction
 	endfunction
 	
 	//PushSystem
-	function NNCouPushActionUnit takes unit u,real degree,real distance,real time,real high,real timeout,integer z,string str_effect,boolean isIgnoreLandform returns nothing 
-		call NNCPushActionUnit(time,degree,distance,timeout,high,u,str_effect,isIgnoreLandform,z)
+	function NNCouPushActionUnit takes unit u,real degree,real distance,real time,real high,real timeout,integer z,string str_effect,boolean isIgnoreLandform returns nothing
+		call NNCPushActionUnit(time,degree,distance,timeout,high,u,str_effect,isIgnoreLandform,z,false)
+	endfunction
+
+	//匀减速位移：distance 为总位移，起步速度约为匀速的 2 倍并线性递减到 0，适合冲锋
+	function NNCouPushActionUnitEx takes unit u,real degree,real distance,real time,real high,real timeout,integer z,string str_effect,boolean isIgnoreLandform,boolean decelerate returns nothing
+		call NNCPushActionUnit(time,degree,distance,timeout,high,u,str_effect,isIgnoreLandform,z,decelerate)
 	endfunction
 	function NNCouSetYDTimerZ takes timer t,integer z returns nothing
 		call NNCSetYDTimerZ(t,z)

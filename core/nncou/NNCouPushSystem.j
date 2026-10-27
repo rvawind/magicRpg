@@ -1,5 +1,7 @@
 
-library NNCouPushSystem requires NNCouPoint
+#include "nncou\\debug.j"
+
+library NNCouPushSystem requires NNCouPoint, DebugLogger
 
 
 globals
@@ -15,26 +17,10 @@ private integer HTAdrs = StringHash("NNCouPushSystem_RiseTimer")
 endglobals
 
 
-#define FLY_HEIGHT StringHash("飞行高度")
-
-function GetUnitFlyHeightEx takes unit u returns real
-    if(HaveSavedReal(nncouHT,GetHandleId(u),FLY_HEIGHT)) then
-        return LoadReal(nncouHT,GetHandleId(u),FLY_HEIGHT)
-    endif
-    return GetUnitFlyHeight(u)
-endfunction 
-
-function SetUnitFlyHeightEx takes unit u ,real val,real v returns nothing
-    if(v<1 or v >10000) then
-        call SaveReal(nncouHT,GetHandleId(u),FLY_HEIGHT,val)
-    else
-        //debug //call BJ//debugMsg("设置高度速率不为0")
-    endif
-    call SetUnitFlyHeight(u,val,0)
-endfunction
-        
-#define GetUnitFlyHeight GetUnitFlyHeightEx
-#define SetUnitFlyHeight SetUnitFlyHeightEx
+// 注意：GetUnitFlyHeightEx / SetUnitFlyHeightEx 及其
+// #define GetUnitFlyHeight/SetUnitFlyHeight 由 NNCouPoint.j 提供，
+// 这里不能再声明一份，否则 JassHelper 报 redeclared。
+// 本文件里对 GetUnitFlyHeight/SetUnitFlyHeight 的调用会经 NNCouPoint 的宏转到 Ex 版本。
 
 private function RiseUnitGroupAction takes nothing returns nothing
     local integer i = GetHandleId( GetEnumUnit())
@@ -159,6 +145,7 @@ function PushTimerByDegree takes nothing returns nothing
     local integer i = GetHandleId(t)
     local integer times = LoadInteger( YDHT, i ,1) //最大运行次数
     local real speed = LoadReal( YDHT , i , 1)//单次移动距离，通过周期得出
+    local real step = LoadReal( YDHT , i , 6)//匀减速模式下每次位移的递减量，0 表示匀速
     local real degree = LoadReal( YDHT , i ,2)
     local string str_effect = LoadStr( YDHT , i, 3)
     local unit u = LoadUnitHandle( YDHT , i ,4)
@@ -206,6 +193,10 @@ function PushTimerByDegree takes nothing returns nothing
                 call SetUnitX(u, r1 )
                 call SetUnitY(u, r2 )
             endif
+            //匀减速：本次位移后降低下一次的位移量。被地形挡住时也照常递减，保证总时长不变
+            if (step > 0.0) then
+                call SaveReal( YDHT , i , 1, speed - step)
+            endif
         endif
     endif
 
@@ -235,10 +226,12 @@ endfunction
     过程特效
     是否无视地形
     优先度
+    是否匀减速（冲锋用 true，普通击退用 false）
 */
-function NNCPushActionUnit takes real time,real degree,real distance,real timeout,real high,unit u,string str_effect ,boolean isIgnoreLandform ,integer z returns nothing 
+function NNCPushActionUnit takes real time,real degree,real distance,real timeout,real high,unit u,string str_effect ,boolean isIgnoreLandform ,integer z ,boolean decelerate returns nothing
     local integer times  = 0
     local real speed = 0
+    local real step = 0
     
     //local real speed_h = 0
     
@@ -247,6 +240,11 @@ function NNCPushActionUnit takes real time,real degree,real distance,real timeou
 
     if(GetUnitAbilityLevel(u,NNSystemController_SKILL_TAG_BOSS)>0) then
         ////debug //call BJ//debugMsg("单位不能被击退")
+        return
+    endif
+    //参数兜底：timeout 为 0 时下面会除零，time 为 0 时没有位移
+    if(timeout <= 0 or time <= 0) then
+        call DebugLogger_Log(LOG_WARN, "[位移系统] 参数非法，已忽略本次位移: unit=" + GetUnitName(u) + " time=" + R2S(time) + " timeout=" + R2S(timeout) + " distance=" + R2S(distance))
         return
     endif
     //清空上次计时器保存内容
@@ -269,9 +267,23 @@ function NNCPushActionUnit takes real time,real degree,real distance,real timeou
 	
 	set times  = R2I(time / timeout)
     if(times <= 0) then
+        call DebugLogger_Log(LOG_WARN, "[位移系统] 位移次数为 0，已忽略本次位移: unit=" + GetUnitName(u) + " time=" + R2S(time) + " timeout=" + R2S(timeout) + " distance=" + R2S(distance))
+        //计时器已在上面启动，这里直接销毁，避免空转一帧
+        call PauseTimer(t)
+        call DestroyTimer(t)
+        set t = null
         return
     endif
 	set speed = distance / I2R(times)
+    if (decelerate) then
+        //匀减速轨迹：n 次位移构成等差数列，第 k 次位移 = 首次位移 - k * 递减量
+        //首次位移 = 2D/(n+1)（约为匀速的 2 倍，起步更有冲击感），递减量 = 2D/(n(n+1))
+        //数列总和精确等于 distance，不会像 YDWE 的写法那样多跑 D*I/T
+        set speed = 2.0 * distance / I2R(times + 1)
+        set step  = 2.0 * distance / (I2R(times) * I2R(times + 1))
+    else
+        set step = 0.0
+    endif
 
     ////call BJ//debugMsg("单位："+GetUnitName(u))
 	////call BJ//debugMsg("总位移距离："+R2S(distance))
@@ -287,6 +299,7 @@ function NNCPushActionUnit takes real time,real degree,real distance,real timeou
 	
     call SaveInteger(YDHT,i,1,times)
     call SaveReal(YDHT,i,1,speed)
+    call SaveReal(YDHT,i,6,step)
     call SaveReal(YDHT,i,2,degree)
     call SaveStr(YDHT,i,3,str_effect)
     call SaveUnitHandle(YDHT,i,4,u)
