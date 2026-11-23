@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""UI 截图核对（配合运行时帧矩形诊断日志，见 magic/UI设计规范.md §10.1）。
+"""UI 截图核对（已停用）。
 
-状态（2026-11-21）：解析/测量逻辑已用合成图单元测试（好图无告警、坏图白块/红/越界三信号全中）；
+状态：**停用（2026-11-23）**。本工具依赖的 `[gridmap] rects` 诊断行随 LogRects 一起移除——
+`DzGetWindowWidth/Height` 在 UI 初始化时机触发 Game.dll 崩溃（0xc0000409），
+见 magic/fixes/2026-11-23-ui-logrects-crash.md。没有可信的帧矩形来源，运行只会误报，
+main() 会直接返回 2。
+替代方向：用安全常量/配置值，或延后到独立、可禁用的诊断开关，并在作者图实测通过后再启用；
+恢复时把本文件的 DISABLED 置回 False，并先补齐新的诊断行来源。
+
+以下为停用前（2026-11-21）的说明，保留供复活参考：
+解析/测量逻辑已用合成图单元测试（好图无告警、坏图白块/红/越界三信号全中）；
 **端到端未验证**——两次实机回归因游戏失焦暂停超时，日志与截图未能同批产出。
 使用前确认截图与日志来自同一次运行、同一窗口分辨率，并用 --offset-x/--offset-y 扣除窗口边框。
 
@@ -30,6 +38,10 @@ try:
 except ImportError:
     print("需要 Pillow：pip install pillow", file=sys.stderr)
     sys.exit(2)
+
+# 停用开关：诊断行来源（LogRects）已按 magic/fixes/2026-11-23-ui-logrects-crash.md 移除。
+# 恢复前必须先提供新的帧矩形来源，再把 DISABLED 置回 False。
+DISABLED = True
 
 RECT_RE = re.compile(r"\[gridmap\]\s+rects\s+(.+)$")
 
@@ -163,6 +175,11 @@ def analyze_with_diag(path, diag, ox, oy):
 
 
 def main():
+    if DISABLED:
+        print("ui_screenshot_check 已停用：依赖的 [gridmap] rects 诊断行已随 LogRects 移除，"
+              "无可信帧矩形来源，详见 magic/fixes/2026-11-23-ui-logrects-crash.md。",
+              file=sys.stderr)
+        return 2
     ap = argparse.ArgumentParser()
     ap.add_argument("image")
     ap.add_argument("--diag-file", help="含 [gridmap] rects 行的日志文件（取最后一条）")
