@@ -12,9 +12,12 @@
 | `map/chapter/` | 章节/波次 |
 | `map/curse/` | 诅咒 |
 | `map/reward/` | 奖励与祭坛 |
-| `map/ui/` | 选择界面等 UI |
+| `map/reveal/` | Step 4 信息揭示数据层（逻辑房 3×3 揭示） |
+| `map/ui/` | 选择界面（`uiPick.j`）与关卡网格地图面板（`gridMap.j`，`~` 开关） |
 | `map/timer/` | 计时器 |
 | `map/monster/` | 怪物组定义与筛选 |
+| `map/debug/` | 调试探针（进房信息提示，`PROBE_ENABLED` 开关） |
+| `map/test/` | 游戏内自动化回归（只进测试图，不进生产构建） |
 | `map/attr/` | 地图级属性注册表 |
 | `map/equip/` | 装备包管线（CSV -> Lua） |
 
@@ -42,4 +45,5 @@
 
 - 新增玩法只放 `magic/`；不要改 `core/` 里的第三方代码。确需改动时单独提交并说明原因。
 - 数据与文本分离；`map/attr` 与 `map/equip` 的生成物不要手改，改 CSV 后重新跑生成器。
+- 代码质量规则见 [`质量基线.md`](质量基线.md)；技术债与团队运行态在仓库根 `.team/`（git 忽略）。
 - 详细规则见 [`map/attr/README.md`](map/attr/README.md) 与 [`map/equip/baseItem/table/README.md`](map/equip/baseItem/table/README.md)。

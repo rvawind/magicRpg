@@ -47,6 +47,7 @@ magic-core/
 │   ├── map/ui/           UI
 │   ├── map/timer/        计时器
 │   ├── map/monster/      怪物组
+│   ├── map/debug/        调试探针（进房信息提示）
 │   ├── map/attr/         属性注册表
 │   └── map/equip/        装备包管线
 ├── tools/                同步与数据转换脚本
@@ -112,5 +113,7 @@ python -I tools/ini2baseitem.py export --ini <w3x2lni导出的item.ini>   # item
 - [`magic/README.md`](magic/README.md)：本项目代码的目录与 include 约定
 - [`magic/map/attr/README.md`](magic/map/attr/README.md)：属性注册表
 - [`magic/map/equip/baseItem/table/README.md`](magic/map/equip/baseItem/table/README.md)：装备 CSV 源表
+- [`magic/STEP4_HANDOFF.md`](magic/STEP4_HANDOFF.md)：当前步交接（本地工作文件，不在 git）
+- [`magic/质量基线.md`](magic/质量基线.md)：代码质量与评审规则
 - [`magic/介绍_v2.txt`](magic/介绍_v2.txt)：玩法设计
-- [`magic/计划.md`](magic/计划.md)、[`magic/测试.md`](magic/测试.md)：开发计划与验收清单
+- [`magic/计划.md`](magic/计划.md)、[`magic/测试.md`](magic/测试.md)、[`magic/优化清单.md`](magic/优化清单.md)：开发计划、验收清单与优化待办
