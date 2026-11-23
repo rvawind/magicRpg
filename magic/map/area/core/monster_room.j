@@ -274,7 +274,6 @@ private function SpawnSingleMonster takes integer areaId, integer monsterId retu
         return
     endif
     call SaveInteger(RoomUnitTable, GetHandleId(u), HT_UNIT_AREA, areaId)
-    call TriggerRegisterUnitEvent(EnterRoomDeathTrig, u, EVENT_UNIT_DEATH)
     call SetAreaAliveMonsterCount(areaId, GetAreaAliveMonsterCount(areaId) + 1)
     call DestroyEffect(AddSpecialEffectTarget("Objects\\Spawnmodels\\NightElf\\EntBirthTarget\\EntBirthTarget.mdl", u, "origin"))
     call DebugLogger_Log(LOG_TRACE, "[room] spawn monster " + I2S(monsterId) + " in " + GetAreaIdName(areaId) + " alive=" + I2S(GetAreaAliveMonsterCount(areaId)))
@@ -349,7 +348,7 @@ private function Trig_MonsterDeath takes nothing returns nothing
     if alive <= 0 and cursor >= MonsterGroup_GetGroupEntryCount(groupId) and remain <= 0 then
         call SetRoomState(areaId, ROOM_STATE_CLEARED)
         call SetAreaClearedThisGame(areaId, true)
-        call DebugLogger_Log(LOG_INFO, "[room] room cleared: " + GetAreaIdName(areaId) + " state->CLEARED")
+        call DebugLogger_LogKey("[room] room cleared: " + GetAreaIdName(areaId) + " state->CLEARED")
         call OnRoomCleared(areaId)
     endif
     set dying = null
@@ -670,6 +669,43 @@ public function RoomGetAliveCount takes integer areaId returns integer
     return GetAreaAliveMonsterCount(areaId)
 endfunction
 
+// 当前房间「还没刷出来」的怪物数量（池内剩余，不含场上存活）。
+// 未初始化（重置/清空表后尚未开刷）时返回整组总量；已开刷后按 cursor/remain 计算剩余。
+// 用途：调试显示「场上 N / 待刷 M」，以及排查分批刷怪是否停在中途。
+function RoomGetUnspawnedCount takes integer areaId returns integer
+    local integer groupId = GetAreaMonsterPool(areaId)
+    local integer entries
+    local integer cursor
+    local integer remain
+    local integer total
+    // 怪物组 ID 从 1 开始，0/负数都表示未配置
+    if groupId <= 0 then
+        return 0
+    endif
+    set entries = MonsterGroup_GetGroupEntryCount(groupId)
+    if entries <= 0 then
+        return 0
+    endif
+    // 「未开始刷」不能靠 cursor/remain 同时为 0 判断：cap 满且恰好耗尽当前池条目时也是 0/0。
+    // InitSpawnCursor 一定会保存 cursor 键，因此用 HaveSavedInteger 区分「未初始化」与「已刷到 0/0」。
+    if not HaveSavedInteger(RoomTable, areaId, HT_SPAWN_CURSOR) then
+        return GetGroupTotalCount(groupId)
+    endif
+    set cursor = LoadInteger(RoomTable, areaId, HT_SPAWN_CURSOR)
+    set remain = LoadInteger(RoomTable, areaId, HT_SPAWN_REMAIN)
+    if cursor >= entries then
+        return 0
+    endif
+    set total = remain
+    set cursor = cursor + 1
+    loop
+        exitwhen cursor >= entries
+        set total = total + MonsterGroup_GetEntryMonsterCount(groupId, cursor)
+        set cursor = cursor + 1
+    endloop
+    return total
+endfunction
+
 /*
     [areaMonsterRoom_IsRoomCleared]
     title = "房间是否已清空"
@@ -788,7 +824,7 @@ private function GetRoomDifficulty takes integer roomType returns integer
     return 1
 endfunction
 
-// 初始化怪物房系统：创建死亡触发器、为逻辑房绑定怪物组、为槽位创建常驻进出触发器
+// 初始化怪物房系统：创建（仅首次）死亡触发器/槽位触发器、为逻辑房绑定怪物组
 // 必须在 InitAreaWithEnter 之后、InitAreaGuards/InitAreaExits 之后调用
 function InitMonsterRoom takes nothing returns nothing
     local integer i = 0
@@ -802,12 +838,12 @@ function InitMonsterRoom takes nothing returns nothing
     local trigger enterTrig
     local trigger leaveTrig
     local integer bound = 0
-    // 重建死亡触发器（跨关卡安全）
-    if EnterRoomDeathTrig != null then
-        call DestroyTrigger(EnterRoomDeathTrig)
+    // 死亡触发器只创建一次；切章不重建（物理槽位/单位表跨章复用，handler 用 RoomUnitTable 过滤）
+    if EnterRoomDeathTrig == null then
+        set EnterRoomDeathTrig = CreateTrigger()
+        call TriggerRegisterAnyUnitEventBJ(EnterRoomDeathTrig, EVENT_PLAYER_UNIT_DEATH)
+        call TriggerAddAction(EnterRoomDeathTrig, function Trig_MonsterDeath)
     endif
-    set EnterRoomDeathTrig = CreateTrigger()
-    call TriggerAddAction(EnterRoomDeathTrig, function Trig_MonsterDeath)
 
     // 按难度随机绑定怪物组
     loop
@@ -836,7 +872,7 @@ function InitMonsterRoom takes nothing returns nothing
     loop
         exitwhen i >= slotCount or i >= MAX_SLOTS
         set r = Slot_GetSlotRegion(i)
-        if r != null then
+        if r != null and SlotEnterTrig[i] == null then
             set enterTrig = CreateTrigger()
             call SaveInteger(RoomTrigTable, GetHandleId(enterTrig), HT_TRIG_SLOT, i)
             call TriggerRegisterEnterRectSimple(enterTrig, r)
@@ -871,12 +907,7 @@ function ResetMonsterRoom takes nothing returns nothing
     local group g
     local unit u
 
-    // 先销毁死亡触发器，避免移除怪物时触发死亡回调
-    if EnterRoomDeathTrig != null then
-        call DestroyTrigger(EnterRoomDeathTrig)
-        set EnterRoomDeathTrig = null
-    endif
-
+    // 死亡触发器跨章保留；移除怪物前先清 RoomUnitTable，handler 会忽略非本系统单位
     // 移除所有绑定房间内的怪物（只移除本系统登记的）
     loop
         exitwhen i >= total
@@ -904,25 +935,7 @@ function ResetMonsterRoom takes nothing returns nothing
         set i = i + 1
     endloop
 
-    // 销毁槽位进出触发器
-    set i = 0
-    loop
-        exitwhen i >= slotCount or i >= MAX_SLOTS
-        set trig = SlotEnterTrig[i]
-        if trig != null then
-            call FlushChildHashtable(RoomTrigTable, GetHandleId(trig))
-            call DestroyTrigger(trig)
-            set SlotEnterTrig[i] = null
-        endif
-        set trig = SlotLeaveTrig[i]
-        if trig != null then
-            call FlushChildHashtable(RoomTrigTable, GetHandleId(trig))
-            call DestroyTrigger(trig)
-            set SlotLeaveTrig[i] = null
-        endif
-        set i = i + 1
-    endloop
-
+    // 槽位进出触发器跨章保留（物理槽位矩形固定；handler 按当前 slot→area 映射查房）
     call DebugLogger_Log(LOG_TRACE, "[room] ResetMonsterRoom done: slots=" + I2S(slotCount))
     set trig = null
     set u = null

@@ -474,7 +474,8 @@ function Slot_Acquire takes integer logicalId, integer terrain returns integer
 
     call BindSlot(slotId, logicalId)
     call FireAcquireHook(logicalId)
-    call DebugLogger_Log(LOG_TRACE, "[slot] acquired logical=" + I2S(logicalId) + " slot=" + I2S(slotId) + " terrain=" + I2S(terrain))
+    // 槽位首次绑定属低频结果，用 INFO 让 debug_level=0 下也能验收（方法论 6 / 测试.md 3.4）
+    call DebugLogger_Log(LOG_INFO, "[slot] acquired logical=" + I2S(logicalId) + " slot=" + I2S(slotId) + " terrain=" + I2S(terrain))
     return slotId
 endfunction
 
@@ -508,7 +509,7 @@ endfunction
 function ResetAreaSlot takes nothing returns nothing
     local integer i = 0
     local integer count = Slot_GetCount()
-    local integer total = Grid_GetTotal()
+    local integer total = Grid_GetMaxId()   // B11：id 空间上限（稀疏时 ≠ 房间数）
     local integer logicalId
     loop
         exitwhen i >= count

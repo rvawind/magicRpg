@@ -38,7 +38,12 @@ globals
     private constant real IDLE_SWEEP_INTERVAL = 1.00
 
     // 英雄进入逻辑房回调（供 BossSystem 等外部系统注册，避免核心模块反向依赖）
-    private trigger AreaEnterCallback = null
+    // 主回调由 SetAreaEnterCallback 覆盖式设置（BOSS 每关都会重设）；
+    // AddAreaEnterCallback 追加的钩子单独存放，不会被主回调的重设冲掉。
+    // 先执行主回调，再按注册顺序执行追加回调。
+    private trigger AreaEnterMainCallback = null
+    private trigger array AreaEnterAddCallbacks
+    private integer AreaEnterAddCount = 0
     private integer AreaEnterCallbackArea = -1
     private unit AreaEnterCallbackUnit = null
 endglobals
@@ -70,15 +75,25 @@ endfunction
 
 // ===== 进入回调 =====
 
-// 注册「英雄进入某逻辑房」回调。回调内用下面两个 getter 读取上下文。
+// 注册「英雄进入某逻辑房」主回调（覆盖式：再次调用会替换上一次注册的代码）。
+// 回调内用下面两个 getter 读取上下文。
 // 物理房会被回收并绑定给其他逻辑房，因此依赖「物理矩形」的触发逻辑不可靠；
 // 需要按房间身份判定的系统（如 BOSS 中转房）应注册此回调。
 function SetAreaEnterCallback takes code c returns nothing
-    if AreaEnterCallback != null then
-        call DestroyTrigger(AreaEnterCallback)
+    if AreaEnterMainCallback != null then
+        call DestroyTrigger(AreaEnterMainCallback)
     endif
-    set AreaEnterCallback = CreateTrigger()
-    call TriggerAddAction(AreaEnterCallback, c)
+    set AreaEnterMainCallback = CreateTrigger()
+    call TriggerAddAction(AreaEnterMainCallback, c)
+endfunction
+
+// 追加一个进入回调，不影响 SetAreaEnterCallback 注册的主回调。
+// 用于调试/信息揭示等旁路系统：它们不消费返回值，也不该抢 BOSS 的主回调。
+// 只能在地图初始化阶段调用（每次调用都会新建触发器，不会去重）。
+function AddAreaEnterCallback takes code c returns nothing
+    set AreaEnterAddCallbacks[AreaEnterAddCount] = CreateTrigger()
+    call TriggerAddAction(AreaEnterAddCallbacks[AreaEnterAddCount], c)
+    set AreaEnterAddCount = AreaEnterAddCount + 1
 endfunction
 
 // 回调上下文：当前进入的逻辑房 ID（-1 表示无效）
@@ -177,9 +192,6 @@ function ReleaseAreaIfIdle takes integer areaId returns boolean
         return false
     endif
     set state = GetRoomState(areaId)
-    if state == ROOM_STATE_CURSED then
-        return false
-    endif
     if CountPlayersInRect(Slot_GetSlotRegion(slotId)) > 0 then
         return false
     endif
@@ -200,6 +212,7 @@ private function Trig_AreaEnterActions takes nothing returns nothing
     local player p
     local integer slotId
     local integer areaId
+    local integer i
     local rect r
     if u == null or not IsUnitType(u, UNIT_TYPE_HERO) then
         set u = null
@@ -215,10 +228,20 @@ private function Trig_AreaEnterActions takes nothing returns nothing
     set r = Slot_GetSlotRegion(slotId)
     call SetPlayerCurrentAreaRect(p, r)
     call DebugLogger_Log(LOG_TRACE, "[enter] " + GetPlayerName(p) + " entered " + GetAreaIdName(areaId) + " slot=" + I2S(slotId))
-    if AreaEnterCallback != null then
+    if AreaEnterMainCallback != null or AreaEnterAddCount > 0 then
         set AreaEnterCallbackArea = areaId
         set AreaEnterCallbackUnit = u
-        call TriggerExecute(AreaEnterCallback)
+        if AreaEnterMainCallback != null then
+            call TriggerExecute(AreaEnterMainCallback)
+        endif
+        set i = 0
+        loop
+            exitwhen i >= AreaEnterAddCount
+            if AreaEnterAddCallbacks[i] != null then
+                call TriggerExecute(AreaEnterAddCallbacks[i])
+            endif
+            set i = i + 1
+        endloop
         set AreaEnterCallbackUnit = null
     endif
     set u = null
@@ -290,39 +313,16 @@ endfunction
 // 重置区域进出保护：销毁槽位触发器与空闲扫描定时器，清空玩家跟踪数据
 // 注意：JASS 不允许前向引用，本函数必须定义在 InitAreaGuards 之前
 function ResetAreaEnter takes nothing returns nothing
-    local integer count = LoadInteger(GuardTable, 0, HT_GUARD_COUNT)
     local integer i = 0
-    local trigger t
-    loop
-        exitwhen i >= count
-        set t = LoadTriggerHandle(GuardTable, 0, HT_GUARD_ENTER_LIST + i)
-        if t != null then
-            call FlushChildHashtable(GuardTrigTable, GetHandleId(t))
-            call DestroyTrigger(t)
-        endif
-        set t = LoadTriggerHandle(GuardTable, 0, HT_GUARD_LEAVE_LIST + i)
-        if t != null then
-            call FlushChildHashtable(GuardTrigTable, GetHandleId(t))
-            call DestroyTrigger(t)
-        endif
-        call RemoveSavedHandle(GuardTable, 0, HT_GUARD_ENTER_LIST + i)
-        call RemoveSavedHandle(GuardTable, 0, HT_GUARD_LEAVE_LIST + i)
-        set i = i + 1
-    endloop
-    call SaveInteger(GuardTable, 0, HT_GUARD_COUNT, 0)
-    if IdleSweepTimer != null then
-        call PauseTimer(IdleSweepTimer)
-        call DestroyTimer(IdleSweepTimer)
-        set IdleSweepTimer = null
-    endif
+    // 物理槽位矩形跨章复用：守卫触发器/空闲定时器只创建一次，切章只清运行时跟踪。
+    // 只有物理槽位集合变化时才需要重建（当前设计不变化）。
     set i = 0
     loop
         exitwhen i >= bj_MAX_PLAYERS
         call FlushChildHashtable(AreaEnterTable, GetHandleId(Player(i)))
         set i = i + 1
     endloop
-    set t = null
-    call DebugLogger_Log(LOG_TRACE, "[enter] ResetAreaEnter done")
+    call DebugLogger_Log(LOG_TRACE, "[enter] ResetAreaEnter done (triggers kept)")
 endfunction
 
 // 为每个已注册物理槽位创建常驻进出监听触发器
@@ -332,7 +332,12 @@ function InitAreaGuards takes nothing returns nothing
     local rect areaRect
     local trigger enter
     local trigger leave
+    if LoadInteger(GuardTable, 0, HT_GUARD_COUNT) == count then
+        call DebugLogger_Log(LOG_TRACE, "[enter] InitAreaGuards reuse: slots=" + I2S(count))
+        return
+    endif
     if LoadInteger(GuardTable, 0, HT_GUARD_COUNT) > 0 then
+        call DebugLogger_Log(LOG_WARN, "[enter] InitAreaGuards slot count changed, rebuilding guards")
         call ResetAreaEnter()
     endif
     loop
@@ -358,7 +363,7 @@ function InitAreaGuards takes nothing returns nothing
         set IdleSweepTimer = CreateTimer()
         call TimerStart(IdleSweepTimer, IDLE_SWEEP_INTERVAL, true, function Trig_IdleSweep)
     endif
-    call DebugLogger_Log(LOG_INFO, "[enter] InitAreaGuards done: slots=" + I2S(count))
+    call DebugLogger_LogKey("[enter] InitAreaGuards done: slots=" + I2S(count))
     set areaRect = null
     set enter = null
     set leave = null

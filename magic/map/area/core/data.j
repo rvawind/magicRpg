@@ -55,6 +55,7 @@ globals
     private constant integer HT_ALIVE_MONSTER = 6
     private constant integer HT_CLEARED_THIS_GAME = 7
     private constant integer HT_AREA_TERRAIN = 8
+    private constant integer HT_IS_CURSED = 9
 
     // 全局配置子键（parent key = 0）
     private constant integer HT_BOSS_AREA = 200
@@ -77,6 +78,9 @@ globals
 
     // 各关卡确定的入口区域ID（parent key = chapterId + 800，子键 0 = areaId）
     private constant integer HT_CHAPTER_ENTER_LIST = 800
+
+    // 入口与 BOSS 的最小图距离（0 = 不限制）；由关卡配置通过 AreaSetEntryBossMinDistance 设置
+    private integer EntryBossMinDistance = 0
 
     // 房间类型权重存储（AreaTypeTable，parent key = typeId）
     private constant integer HT_RTW_WEIGHT = 0
@@ -109,6 +113,15 @@ endfunction
 // 获取房间状态
 function GetRoomState takes integer areaId returns integer
     return LoadInteger(AreaDataTable, areaId, HT_ROOM_STATE)
+endfunction
+
+// 诅咒属性：与生命周期 RoomState 正交（已清房仍可被侵蚀、侵蚀房仍可刷怪/清房）
+function AreaIsCursed takes integer areaId returns boolean
+    return LoadBoolean(AreaDataTable, areaId, HT_IS_CURSED)
+endfunction
+
+function AreaSetCursed takes integer areaId, boolean cursed returns nothing
+    call SaveBoolean(AreaDataTable, areaId, HT_IS_CURSED, cursed)
 endfunction
 
 // 设置房间状态
@@ -376,6 +389,14 @@ function AreaAddEnter takes integer areaId returns nothing
     call SaveInteger(AreaDataTable, 0, HT_ENTER_COUNT, count + 1)
 endfunction
 
+// B11：坐标存在时注册为起点候选（稀疏缺格安全）
+private function AreaAddEnterIfPresent takes integer row, integer col returns nothing
+    local integer id = Grid_GetIdIfPresent(row, col)
+    if id >= 0 then
+        call AreaAddEnter(id)
+    endif
+endfunction
+
 // 按网格尺寸自动注册外围 8 个起点候选：
 //   4 角 + 4 边中点（边中点取 cols/2、rows/2 整数除法）
 function AreaAddPeripheralEnters takes nothing returns nothing
@@ -384,14 +405,15 @@ function AreaAddPeripheralEnters takes nothing returns nothing
     if rows <= 0 or cols <= 0 then
         return
     endif
-    call AreaAddEnter(Grid_GetId(0, 0))
-    call AreaAddEnter(Grid_GetId(0, cols - 1))
-    call AreaAddEnter(Grid_GetId(rows - 1, 0))
-    call AreaAddEnter(Grid_GetId(rows - 1, cols - 1))
-    call AreaAddEnter(Grid_GetId(0, cols / 2))
-    call AreaAddEnter(Grid_GetId(rows / 2, 0))
-    call AreaAddEnter(Grid_GetId(rows / 2, cols - 1))
-    call AreaAddEnter(Grid_GetId(rows - 1, cols / 2))
+    // B11：稀疏地图缺格时 GetIdIfPresent 返回 -1，跳过而不是注册幽灵房间
+    call AreaAddEnterIfPresent(0, 0)
+    call AreaAddEnterIfPresent(0, cols - 1)
+    call AreaAddEnterIfPresent(rows - 1, 0)
+    call AreaAddEnterIfPresent(rows - 1, cols - 1)
+    call AreaAddEnterIfPresent(0, cols / 2)
+    call AreaAddEnterIfPresent(rows / 2, 0)
+    call AreaAddEnterIfPresent(rows / 2, cols - 1)
+    call AreaAddEnterIfPresent(rows - 1, cols / 2)
 endfunction
 
 // 增加一个 BOSS 候选区域（自动去重）
@@ -412,6 +434,20 @@ function AreaAddBossCandidate takes integer areaId returns nothing
     call SaveInteger(AreaDataTable, 0, HT_BOSS_CAND_COUNT, count + 1)
 endfunction
 
+// 指定区域是否为 BOSS 候选（测试/UI 查询用，不写死中心坐标）
+function AreaIsBossCandidate takes integer areaId returns boolean
+    local integer count = LoadInteger(AreaDataTable, 0, HT_BOSS_CAND_COUNT)
+    local integer i = 0
+    loop
+        exitwhen i >= count
+        if LoadInteger(AreaDataTable, 0, HT_BOSS_CAND_LIST + i) == areaId then
+            return true
+        endif
+        set i = i + 1
+    endloop
+    return false
+endfunction
+
 // 从候选列表随机确定 BOSS 房
 function RollBossArea takes nothing returns nothing
     local integer count = LoadInteger(AreaDataTable, 0, HT_BOSS_CAND_COUNT)
@@ -422,23 +458,80 @@ function RollBossArea takes nothing returns nothing
     call AreaSetBossroom(LoadInteger(AreaDataTable, 0, HT_BOSS_CAND_LIST + GetRandomInt(0, count - 1)))
 endfunction
 
-// 从入口候选列表中随机确定指定关卡的入口区域（排除 BOSS 房）
+// 设置入口与 BOSS 的最小图距离（0 = 不限制）；在 RollActiveEnter 之前调用
+function AreaSetEntryBossMinDistance takes integer dist returns nothing
+    if dist < 0 then
+        set dist = 0
+    endif
+    set EntryBossMinDistance = dist
+endfunction
+
+// 从入口候选列表中随机确定指定关卡的入口区域
+// - 排除 BOSS 房；
+// - 若设置了最小图距离，只在满足距离的候选里均匀随机；
+//   没有候选满足时退回「距离最大」的候选，并打 INFO 说明。
 function RollActiveEnter takes integer chapterId returns nothing
     local integer count = LoadInteger(AreaDataTable, 0, HT_ENTER_COUNT)
     local integer bossArea = LoadInteger(AreaDataTable, 0, HT_BOSS_AREA)
-    local integer attempt = 0
+    local integer threshold = EntryBossMinDistance
+    local integer i = 0
     local integer pick
+    local integer dist
+    local integer bestDist = -1
+    local integer seen = 0
+    local integer chosen = -1
+    local integer chosenDist = -1
     if count <= 0 then
         return
     endif
-    loop
-        set pick = LoadInteger(AreaDataTable, 0, HT_ENTER_LIST + GetRandomInt(0, count - 1))
-        if pick != bossArea or attempt >= count then
-            call SaveInteger(AreaDataTable, chapterId + HT_CHAPTER_ENTER_LIST, 0, pick)
-            return
+    if not Grid_IsValidId(bossArea) then
+        set threshold = -1
+    endif
+
+    // 一次 BFS 建距离场；后面所有候选都用 O(1) 读取，避免初始化线程超过字节码上限
+    call Grid_BuildDistanceField(bossArea)
+
+    // 1) 阈值不可达时退回最大距离
+    if threshold > 0 then
+        loop
+            exitwhen i >= count
+            set pick = LoadInteger(AreaDataTable, 0, HT_ENTER_LIST + i)
+            if pick != bossArea then
+                set dist = Grid_GetFieldDistance(pick)
+                if dist > bestDist then
+                    set bestDist = dist
+                endif
+            endif
+            set i = i + 1
+        endloop
+        if bestDist >= 0 and bestDist < threshold then
+            set threshold = bestDist
+            call DebugLogger_Log(LOG_INFO, "[area] entry-boss min distance unreachable, using max=" + I2S(bestDist))
         endif
-        set attempt = attempt + 1
+    endif
+
+    // 2) 在满足阈值的候选里均匀随机（蓄水池抽样）
+    set i = 0
+    loop
+        exitwhen i >= count
+        set pick = LoadInteger(AreaDataTable, 0, HT_ENTER_LIST + i)
+        if pick != bossArea then
+            set dist = Grid_GetFieldDistance(pick)
+            if dist >= threshold then
+                set seen = seen + 1
+                if GetRandomInt(1, seen) == 1 then
+                    set chosen = pick
+                endif
+            endif
+        endif
+        set i = i + 1
     endloop
+    if chosen < 0 then
+        set chosen = LoadInteger(AreaDataTable, 0, HT_ENTER_LIST + GetRandomInt(0, count - 1))
+    endif
+    call SaveInteger(AreaDataTable, chapterId + HT_CHAPTER_ENTER_LIST, 0, chosen)
+    set chosenDist = Grid_GetFieldDistance(chosen)
+    call DebugLogger_LogKey("[area] active enter=" + GetAreaIdName(chosen) + " boss=" + GetAreaIdName(bossArea) + " dist=" + I2S(chosenDist) + " min=" + I2S(EntryBossMinDistance))
 endfunction
 
 // 增加一个诅咒起始区域（Step 5 前保留兼容；外围判定已可自动推导）
@@ -715,7 +808,7 @@ function InitAreaWithEnter takes integer chapterId returns nothing
         endif
         set k = k + 1
     endloop
-    call DebugLogger_Log(LOG_INFO, "[area] distribution total=" + I2S(total) + " monster=" + I2S(nMonster) + " safe=" + I2S(nSafe) + " elite=" + I2S(nElite) + " boss=" + I2S(nBoss) + " entry=" + I2S(nEntry) + " other=" + I2S(nOther) + " terrains=" + I2S(terrainCount))
+    call DebugLogger_LogKey("[area] distribution total=" + I2S(total) + " monster=" + I2S(nMonster) + " safe=" + I2S(nSafe) + " elite=" + I2S(nElite) + " boss=" + I2S(nBoss) + " entry=" + I2S(nEntry) + " other=" + I2S(nOther) + " terrains=" + I2S(terrainCount))
     call DebugLogger_Log(LOG_INFO, "[area] active enter=" + GetAreaIdName(activeEnter) + " boss=" + GetAreaIdName(bossArea))
 endfunction
 
@@ -751,8 +844,9 @@ function ResetAreaData takes nothing returns nothing
         set i = i + 1
     endloop
 
-    // 清理全局配置（parent key = 0）
+    // 清理全局配置（parent key = 0）与全局标量
     call FlushChildHashtable(AreaDataTable, 0)
+    set EntryBossMinDistance = 0
 
     // 清理各关卡入口缓存（parent key = chapterId + HT_CHAPTER_ENTER_LIST）
     set i = 0

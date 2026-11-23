@@ -6,12 +6,14 @@
 
     Step 3 起废弃旧的手动出口注册与 3 秒引导：
     - 连通关系由 areaGrid 的邻接自动决定；
-    - 每个物理槽位注册 4 个门洞矩形；
-    - 玩家英雄走进「已连通方向」的门洞时瞬时传送到目标逻辑房；
-    - 只有安全房/入口房或已清空的房间可以通行，未清空房间的门显示封锁特效。
+    - 每个物理槽位注册 4 个门洞矩形（只用于方向判定与特效，**不再**监听走进事件）；
+    - 传送统一由 emergency.j 的共通技能触发：站进门洞矩形施法；
+      源房可通行（安全/入口/BOSS/已清空）时免费，未清空时按紧急穿越扣代价；
+    - 未清空房间的连通方向显示橙色/红色封锁特效；无邻居方向只封路径，
+      有模板障碍物就克隆，没有就什么都不显示（不再共用红色特效，避免误判成 4 个出口）。
 
-    门洞触发器按槽位常驻，事件发生时通过槽位反查当前逻辑 ID。
-    TryTraverse 也供 emergency.j 复用（bypassGate=true 绕过清房限制）。
+    本模块只负责门洞的视觉与通行状态；TryTraverse 供 emergency.j 复用
+    （bypassGate=true 表示允许在未清空时通过，代价由调用方决定）。
 
     关闭门洞的障碍物（Step 3 补充）：
     - 网格里「没有这条边」的方向，洞口的实体障碍物由本模块管理；
@@ -19,7 +21,7 @@
       门洞模板矩形（A1/B1/C1/D1 内）里，初始化时读取类型与相对方位，然后删除原件；
     - 绑定时按模板重建到目标房间，方向变为可通行时再删除；
     - 「有邻居但房间未清空」的方向不放置障碍物（否则英雄站不进矩形，紧急穿越失效），
-      只显示红色封锁特效。
+      只显示红色封锁特效；「没有这条边」的方向反过来：只有障碍物（模板存在时），没有特效。
     - 限制：只能读取可破坏物（destructable），纯装饰物（doodad）触发器不可见；
       API 读不到原始角度/缩放，重建统一 0°、1.0 缩放，变体随机。
 
@@ -28,14 +30,8 @@
 library areaExit requires areaData, areaEnter, areaSlot, areaGrid, DebugLogger
 
 globals
-    // 触发器 -> 槽位/方向（parent key = GetHandleId(trigger)）
-    private hashtable ExitTrigTable = InitHashtable()
-    private constant integer HT_TRIG_SLOT = 0
-    private constant integer HT_TRIG_DIR = 1
-
-    // 每个槽位最多 4 个方向；槽位上限 64 -> 256
+    // 每个槽位 4 个方向；槽位上限 64 -> 256（门洞特效/路径快照的索引上限）
     private constant integer MAX_DOOR_TRIGGERS = 256
-    private trigger array DoorEnterTrig
     private effect array DoorEffect
 
     // 门洞常驻特效（可用/封锁）。占位符，可在 WE 中替换
@@ -54,15 +50,14 @@ globals
     private constant integer DECOR_MAX_PER_DIR = 16
 
     // ===== 无邻居方向的动态路径阻断 =====
-    // 模板障碍物是可选的手工装饰；真正的阻挡由 SetTerrainPathable 完成，
-    // 避免「没有摆可破坏物时洞口看起来能走、实际走不了」。
+    // 阻挡由 SetTerrainPathable 完成；模板障碍物只是可选的手工视觉。
+    // 该方向没有模板时不加任何特效：门洞常驻特效里「红火」专指「有路但房间没清空」，
+    // 无通路方向复用同一模型会让玩家误以为 4 个方向都能走。
     // 数据：parent key = slot * 4 + dir
     //   child 0 = 采样点数；child 1+i*3 = x，2+i*3 = y，3+i*3 = 原始可通行(0/1)
     private hashtable DoorPathingTable = InitHashtable()
     private constant real DOOR_PATH_SAMPLE_STEP = 32.0
     private constant integer DOOR_PATH_MAX_SAMPLES = 512
-    // 无邻居且无模板障碍物时的视觉提示（红色封锁，与「未清空」共用模型但含义为「不通」）
-    private constant string EXIT_EFFECT_SEALED = "Abilities\\Spells\\Other\\Doom\\DoomTarget.mdl"
 
     // 枚举回调上下文
     private rect DecorEnumRect = null
@@ -393,18 +388,14 @@ function RefreshSlotDoors takes integer slotId returns nothing
                 endif
             endif
         else
-            // 网格里没有这条边：动态路径阻断 + 视觉提示
+            // 网格里没有这条边：只做动态路径阻断
+            // 有模板障碍物才克隆上去；没有模板就什么都不加（不要再用「未清空」同款红火，
+            // 否则玩家分不清「清完能走」和「根本没有路」）。
             // 先快照原始路径（此时门洞里还没有克隆障碍物），再生成障碍物并阻断
             call EnsureDoorPathingCaptured(slotId * 4 + dir)
-            // 模板障碍物只是可选装饰；没有模板时用封锁特效避免「洞口看起来能走」
             set decorCount = LoadInteger(DecorTemplateTable, terrain * 4 + dir, 0)
             if decorCount > 0 then
                 call CreateSlotDoorDecor(slotId, dir, terrain)
-            else
-                set door = Slot_GetSlotDoor(slotId, dir)
-                if door != null then
-                    set DoorEffect[slotId * 4 + dir] = AddSpecialEffect(EXIT_EFFECT_SEALED, GetRectCenterX(door), GetRectCenterY(door))
-                endif
             endif
             call SetDoorPathingBlocked(slotId * 4 + dir, true)
         endif
@@ -440,15 +431,21 @@ endfunction
 
 /*
     尝试从 sourceId 沿 dir 方向传送到邻居。
-    bypassGate = false：普通门洞，要求源房间可通行（安全/入口/已清空）；
-    bypassGate = true：紧急穿越，绕过清房限制。
+    bypassGate = false：要求源房间可通行（安全/入口/已清空），保留给未来的
+                       传送阵房等自动传送场景；
+    bypassGate = true：允许在未清空时穿越，代价由调用方（emergency.j）决定。
+    Step 3.6 起「走进门洞」不再触发传送，本函数只由共通技能调用。
+    落点在目标房「通往源房」的门洞中心（不是房间中心）。
     返回是否成功传送。
 */
 function TryTraverse takes unit u, integer sourceId, integer dir, boolean bypassGate returns boolean
     local integer targetId
     local integer targetSlot
     local rect targetRect
+    local rect targetDoor
     local player p
+    local real x
+    local real y
     if u == null then
         return false
     endif
@@ -476,15 +473,28 @@ function TryTraverse takes unit u, integer sourceId, integer dir, boolean bypass
         return false
     endif
 
+    // 落点：目标房中「通往源房」的门洞中心（即刚穿过的那条通道的另一端），
+    // 而不是房间中心——从 (0,0) 向下进 (1,0)，就落在 (1,0) 的上门洞里。
+    // 门洞矩形缺失时退回房间中心（不变量被破坏，打 WARN）。
+    set targetDoor = Slot_GetSlotDoor(targetSlot, Grid_OppositeDir(dir))
+    if targetDoor != null then
+        set x = GetRectCenterX(targetDoor)
+        set y = GetRectCenterY(targetDoor)
+    else
+        set x = GetRectCenterX(targetRect)
+        set y = GetRectCenterY(targetRect)
+        call DebugLogger_Log(LOG_WARN, "[exit] arrival door missing, fallback to rect center " + GetAreaIdName(targetId) + " dir=" + I2S(Grid_OppositeDir(dir)) + " slot=" + I2S(targetSlot))
+    endif
+
     set p = GetOwningPlayer(u)
     // 先授权离开：SetUnitPosition 同步触发源房 leave 守卫，守卫必须放行
     call AllowPlayerLeaveAreaOnce(p)
-    call SetUnitPosition(u, GetRectCenterX(targetRect), GetRectCenterY(targetRect))
+    call SetUnitPosition(u, x, y)
     call DestroyEffect(AddSpecialEffectTarget("Abilities\\Spells\\Human\\MassTeleport\\MassTeleportTarget.mdl", u, "origin"))
     if bypassGate then
-        call DebugLogger_Log(LOG_INFO, "[exit] emergency teleport " + GetAreaIdName(sourceId) + "->" + GetAreaIdName(targetId) + " slot=" + I2S(targetSlot))
+        call DebugLogger_LogKey("[exit] emergency teleport " + GetAreaIdName(sourceId) + "->" + GetAreaIdName(targetId) + " slot=" + I2S(targetSlot))
     else
-        call DebugLogger_Log(LOG_INFO, "[exit] teleport " + GetAreaIdName(sourceId) + "->" + GetAreaIdName(targetId) + " slot=" + I2S(targetSlot))
+        call DebugLogger_LogKey("[exit] teleport " + GetAreaIdName(sourceId) + "->" + GetAreaIdName(targetId) + " slot=" + I2S(targetSlot))
     endif
 
     // 源房若已清空/未激活且无玩家，立即释放（ACTIVE/CURSED 保留）
@@ -492,88 +502,42 @@ function TryTraverse takes unit u, integer sourceId, integer dir, boolean bypass
 
     set p = null
     set targetRect = null
+    set targetDoor = null
     return true
-endfunction
-
-// ===== 门洞事件 =====
-
-private function Trig_DoorEnter takes nothing returns nothing
-    local unit u = GetTriggerUnit()
-    local integer tid = GetHandleId(GetTriggeringTrigger())
-    local integer slotId = LoadInteger(ExitTrigTable, tid, HT_TRIG_SLOT)
-    local integer dir = LoadInteger(ExitTrigTable, tid, HT_TRIG_DIR)
-    local integer sourceId = Slot_GetLogicalId(slotId)
-    if u == null then
-        return
-    endif
-    if sourceId < 0 then
-        set u = null
-        return
-    endif
-    call TryTraverse(u, sourceId, dir, false)
-    set u = null
 endfunction
 
 // ===== 初始化 / 重置 =====
 
-// 为每个槽位的 4 个门洞创建常驻进入触发器（门洞矩形为 null 则跳过）
+// 初始化门洞系统：捕获闭门障碍物模板，并为已绑定槽位刷新门洞特效。
+// Step 3.6 起不再为门洞创建「走进即传送」触发器——传送统一由技能触发，
+// 门洞矩形只用于判定施法时朝向哪个方向（FindDoorDirAtPosition）。
 function InitAreaExits takes nothing returns nothing
     local integer slotCount = Slot_GetCount()
     local integer slotId = 0
-    local integer dir
-    local integer index
-    local rect door
-    local trigger t
     // 先读取并清空模板/门洞里的手工障碍物，后续按门洞状态重建
     call CaptureDoorDecor()
     // 门洞原始路径状态不在这里采样：80 个门洞逐点采样会撑爆单线程字节码上限，
     // 改为各方向首次需要封锁时懒采样（EnsureDoorPathingCaptured）
     loop
         exitwhen slotId >= slotCount
-        set dir = 0
-        loop
-            exitwhen dir >= 4
-            set index = slotId * 4 + dir
-            if index < MAX_DOOR_TRIGGERS then
-                set door = Slot_GetSlotDoor(slotId, dir)
-                if door != null and DoorEnterTrig[index] == null then
-                    set t = CreateTrigger()
-                    call SaveInteger(ExitTrigTable, GetHandleId(t), HT_TRIG_SLOT, slotId)
-                    call SaveInteger(ExitTrigTable, GetHandleId(t), HT_TRIG_DIR, dir)
-                    call TriggerRegisterEnterRectSimple(t, door)
-                    call TriggerAddAction(t, function Trig_DoorEnter)
-                    set DoorEnterTrig[index] = t
-                endif
-            endif
-            set dir = dir + 1
-        endloop
         if Slot_GetLogicalId(slotId) >= 0 then
             call RefreshSlotDoors(slotId)
         endif
         set slotId = slotId + 1
     endloop
-    call DebugLogger_Log(LOG_INFO, "[exit] InitAreaExits done: slots=" + I2S(slotCount))
-    set door = null
-    set t = null
+    call DebugLogger_LogKey("[exit] InitAreaExits done: slots=" + I2S(slotCount))
 endfunction
 
-// 重置门洞系统：销毁所有门洞触发器与常驻特效
+// 重置门洞系统：清空常驻特效、闭门障碍物实例与路径快照
 function ResetAreaExit takes nothing returns nothing
     local integer slotCount = Slot_GetCount()
     local integer i = 0
     local integer limit = slotCount * 4
-    local trigger t
     if limit > MAX_DOOR_TRIGGERS then
         set limit = MAX_DOOR_TRIGGERS
     endif
     loop
         exitwhen i >= limit
-        set t = DoorEnterTrig[i]
-        if t != null then
-            call FlushChildHashtable(ExitTrigTable, GetHandleId(t))
-            call DestroyTrigger(t)
-            set DoorEnterTrig[i] = null
-        endif
         call DestroyDoorEffect(i)
         call ClearDoorDecorAt(i)
         call SetDoorPathingBlocked(i, false)
@@ -582,7 +546,6 @@ function ResetAreaExit takes nothing returns nothing
         set i = i + 1
     endloop
     call DebugLogger_Log(LOG_TRACE, "[exit] ResetAreaExit done: slots=" + I2S(slotCount))
-    set t = null
 endfunction
 
 // ===== 兼容占位（旧接口） =====

@@ -28,7 +28,8 @@ endglobals
 function InitDust takes nothing returns nothing
     // TODO: Step 3 起 Dust 也使用「逻辑网格 + 物理槽位」模型：
     // 1) 在 WE 中摆放 Dust 的物理房，并用 areaSlot_RegisterPhysicalRoom 注册（每个关卡一套物理房）；
-    // 2) Grid_Init(rows, cols) / Grid_SetPruneChance / Grid_BuildEdges；
+    // 2) Grid_Init(rows, cols) / Grid_SetGeneratorMode / Grid_SetExtraEdgeBudget /
+    //    Grid_SetBraidChance / Grid_BuildEdges；
     // 3) 循环 RegisterArea(i) 注册全部逻辑房；
     // 4) AreaAddEnter / AreaAddPeripheralEnters 配置起点；
     // 5) AreaAddBossCandidate + RollBossArea；

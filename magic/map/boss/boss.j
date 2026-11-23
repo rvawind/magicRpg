@@ -33,6 +33,7 @@ globals
 
     // 触发器
     private trigger BossDeathTrig = null
+    private boolean BossEnterHookRegistered = false
     // BOSS死亡回调（供ChapterManager等外部模块注册，避免循环依赖）
     private trigger BossDeathCallback = null
     // BOSS 战斗场地（可选）：由关卡配置注入；未设置时退回 BOSS 中转房中心
@@ -118,11 +119,8 @@ private function DoSpawnBoss takes nothing returns nothing
     call SaveInteger(BossTable, 0, HT_BOSS_AREA, bossArea)
     call SaveBoolean(BossTable, 0, HT_BOSS_IS_DEAD, false)
     call SaveBoolean(BossTable, 0, HT_BOSS_FIRST_ATTACKED, false)
-    if BossDeathTrig != null then
-        call TriggerRegisterUnitEvent(BossDeathTrig, boss, EVENT_UNIT_DEATH)
-    endif
     call OnBossSpawn(boss)
-    call DebugLogger_Log(LOG_INFO, "[boss] spawned in " + GetAreaIdName(bossArea) + " typeId=" + I2S(typeId))
+    call DebugLogger_LogKey("[boss] spawned in " + GetAreaIdName(bossArea) + " typeId=" + I2S(typeId))
     set boss = null
 endfunction
 
@@ -176,6 +174,11 @@ endfunction
     type = code
 */
 public function RegisterBossDeathCallback takes code cb returns nothing
+    // 持久化：回调触发器只创建一次；各章回调相同（OnBossDeathHandler），不重建
+    if BossDeathCallback != null then
+        call DebugLogger_Log(LOG_TRACE, "[boss] RegisterBossDeathCallback reuse existing")
+        return
+    endif
     set BossDeathCallback = CreateTrigger()
     call TriggerAddAction(BossDeathCallback, cb)
 endfunction
@@ -217,14 +220,18 @@ public function InitBossSystem takes nothing returns nothing
         return
     endif
     // 不需要在初始化时绑定物理槽位：BOSS 中转房按需绑定，进入判定走逻辑 ID 回调
-    if BossDeathTrig != null then
-        call DestroyTrigger(BossDeathTrig)
+    // 触发器持久化：死亡触发器只建一次，用 any-unit death 事件（handler 按已存 boss 过滤）
+    if BossDeathTrig == null then
+        set BossDeathTrig = CreateTrigger()
+        call TriggerRegisterAnyUnitEventBJ(BossDeathTrig, EVENT_PLAYER_UNIT_DEATH)
+        call TriggerAddAction(BossDeathTrig, function Trig_BossDeath)
     endif
-    set BossDeathTrig = CreateTrigger()
-    call TriggerAddAction(BossDeathTrig, function Trig_BossDeath)
-    // 按逻辑 ID 监听英雄进入（物理房可能被回收并绑定给其他逻辑房）
-    call SetAreaEnterCallback(function Trig_AreaEnterHook)
-    call DebugLogger_Log(LOG_INFO, "[boss] InitBossSystem done: area=" + GetAreaIdName(bossArea) + " (logical entry hook)")
+    // 主进房回调只注册一次（可能被测试/其他系统覆盖；保留首次注册）
+    if not BossEnterHookRegistered then
+        set BossEnterHookRegistered = true
+        call SetAreaEnterCallback(function Trig_AreaEnterHook)
+    endif
+    call DebugLogger_LogKey("[boss] InitBossSystem done: area=" + GetAreaIdName(bossArea) + " (logical entry hook)")
 endfunction
 
 /*
@@ -295,11 +302,7 @@ function ResetBossSystem takes nothing returns nothing
     if boss != null then
         call RemoveUnit(boss)
     endif
-    // 销毁触发器
-    if BossDeathTrig != null then
-        call DestroyTrigger(BossDeathTrig)
-        set BossDeathTrig = null
-    endif
+    // 触发器/回调跨章保留（持久化）；只清本关运行时状态
     // 清空本关状态（HT_BOSS_TYPE_ID 由下一关的 InitForest 重新设置）
     call FlushChildHashtable(BossTable, 0)
     set boss = null

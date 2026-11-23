@@ -8,12 +8,14 @@
 #include "nncou\\magic\\map\\area\\core\\exit.j"
 #include "nncou\\magic\\map\\area\\core\\monster_room.j"
 #include "nncou\\magic\\map\\area\\core\\emergency.j"
+#include "nncou\\magic\\map\\reveal\\reveal.j"
 #include "nncou\\magic\\map\\timer\\timer.j"
 #include "nncou\\magic\\map\\curse\\curse.j"
 #include "nncou\\magic\\map\\boss\\boss.j"
 #include "nncou\\magic\\map\\ui\\uiPick.j"
 #include "nncou\\magic\\map\\reward\\reward.j"
 #include "nncou\\magic\\map\\reward\\altar.j"
+#include "nncou\\magic\\map\\debug\\area_probe.j"
 /*
     关卡管理模块
 
@@ -30,14 +32,15 @@
 
     依赖：areaData, areaEnter, areaExit, areaMonsterRoom, ChapterTimer, CurseSystem, BossSystem
 */
-library ChapterManager requires areaGrid, areaSlot, areaData, areaEnter, areaExit, areaMonsterRoom, ChapterTimer, CurseSystem, BossSystem, RewardAltar, RewardItem, UiPick, DebugLogger
+library ChapterManager requires areaGrid, areaSlot, areaData, areaEnter, areaExit, areaMonsterRoom, areaReveal, ChapterTimer, CurseSystem, BossSystem, RewardAltar, RewardItem, UiPick, DebugLogger
 
 globals
     private hashtable ChapterTable = InitHashtable()
 
     // 章节状态（parent key = 0）
-    private constant integer HT_CURRENT_CHAPTER = 0
-    private constant integer HT_CHAPTER_COUNT = 1
+    // 全局键放到独立 subkey，避免与 chapterId=0 的章节字段（0/1/2）冲突
+    private constant integer HT_CURRENT_CHAPTER = 100
+    private constant integer HT_CHAPTER_COUNT = 101
 
     // 每个关卡配置（parent key = chapterId）
     private constant integer HT_CHAPTER_NAME = 0
@@ -54,6 +57,13 @@ globals
 
     // 村落复活/传送点矩形（由外部通过 SetVillageRect 注入，替代直接引用 gg_rct_Village）
     public rect VillageRect = null
+
+    // 全通/推进状态
+    private trigger AllCompleteTrig = null
+    private boolean AllCompleteFired = false
+    private timer AdvanceTimer = null
+    private boolean AdvancePending = false
+    private group AdvanceGroup = null
 endglobals
 
 // ===== 钩子（private，可在 chapter.j 内部覆写）=====
@@ -86,7 +96,31 @@ private function OnChapterComplete takes integer chapterId returns nothing
 endfunction
 
 // 所有关卡完成时触发
+private function FireAllComplete takes nothing returns nothing
+    local integer i = 0
+    local player p
+    if AllCompleteFired then
+        return
+    endif
+    set AllCompleteFired = true
+    call DebugLogger_LogKey("[chapter] all chapters complete")
+    if AllCompleteTrig != null then
+        call TriggerExecute(AllCompleteTrig)
+    endif
+    // 原生胜利：对每个人类玩家调用 WC3 自带 CustomVictoryBJ（4 人合作全胜）
+    loop
+        exitwhen i >= 4
+        set p = Player(i)
+        if GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(p) == MAP_CONTROL_USER then
+            call CustomVictoryBJ(p, true, true)
+        endif
+        set i = i + 1
+    endloop
+    set p = null
+endfunction
+
 private function OnAllChapterComplete takes nothing returns nothing
+    call FireAllComplete()
 endfunction
 
 // 完成当前关卡：标记完成、停诅咒/计时器、触发完成钩子
@@ -100,16 +134,37 @@ endfunction
 public function CompleteChapter takes nothing returns nothing
     local integer chapterId = LoadInteger(ChapterTable, 0, HT_CURRENT_CHAPTER)
     local integer totalCount = LoadInteger(ChapterTable, 0, HT_CHAPTER_COUNT)
+    local integer i = 0
+    local boolean allDone = true
+    if LoadInteger(ChapterTable, chapterId, HT_CHAPTER_STATE) == CHAPTER_STATE_COMPLETED then
+        call DebugLogger_Log(LOG_TRACE, "[chapter] CompleteChapter ignored: already completed chapter=" + I2S(chapterId))
+        return
+    endif
     call SaveInteger(ChapterTable, chapterId, HT_CHAPTER_STATE, CHAPTER_STATE_COMPLETED)
-    // 停止诅咒和计时器
     call CurseSystem_StopCurseSpread()
     call ChapterTimer_PauseChapterTimer()
-    // 触发钩子
     call OnChapterComplete(chapterId)
-    // 检查是否全部完成
-    if chapterId >= totalCount - 1 then
+    loop
+        exitwhen i >= totalCount
+        if LoadInteger(ChapterTable, i, HT_CHAPTER_STATE) != CHAPTER_STATE_COMPLETED then
+            set allDone = false
+        endif
+        set i = i + 1
+    endloop
+    if allDone then
         call OnAllChapterComplete()
     endif
+endfunction
+
+public function RegisterAllChapterCompleteCallback takes code cb returns nothing
+    if AllCompleteTrig == null then
+        set AllCompleteTrig = CreateTrigger()
+    endif
+    call TriggerAddAction(AllCompleteTrig, cb)
+endfunction
+
+public function IsAllChapterComplete takes nothing returns boolean
+    return AllCompleteFired
 endfunction
 
 // BOSS死亡处理器：完成关卡 + BOSS奖励
@@ -133,9 +188,10 @@ endfunction
 // ===== 内部：统一重置所有子系统 =====
 
 // 按依赖逆序重置：先清理依赖其他模块的系统，最后清理基础数据
-// 顺序：BossSystem → RewardAltar → RewardItem → MonsterRoom → CurseSystem → AreaExit
+// 顺序：Reveal → BossSystem → RewardAltar → RewardItem → MonsterRoom → CurseSystem → AreaExit
 //       → AreaEmergency → AreaEnter → AreaData → AreaSlot → AreaGrid
 private function ResetAllSubsystems takes nothing returns nothing
+    call Reveal_Reset()
     call ResetBossSystem()
     call ResetRewardAltar()
     call ResetRewardItem()
@@ -297,22 +353,14 @@ public function NextChapter takes nothing returns nothing
     local integer totalCount = LoadInteger(ChapterTable, 0, HT_CHAPTER_COUNT)
     local integer next = current + 1
     if next >= totalCount then
+        call DebugLogger_Log(LOG_WARN, "[chapter] NextChapter ignored: no next chapter (current=" + I2S(current) + "/" + I2S(totalCount) + ")")
+        return
+    endif
+    if ChapterInitTrig[next] == null then
+        call DebugLogger_Log(LOG_WARN, "[chapter] NextChapter aborted: chapter " + I2S(next) + " has no init func")
         return
     endif
     call StartChapter(next)
-endfunction
-
-/*
-    [RestartChapter]
-    title = "重启当前关卡"
-    description = "重新开始当前关卡"
-    category = TC_FRO
-*/
-public function RestartChapter takes nothing returns nothing
-    local integer chapterId = LoadInteger(ChapterTable, 0, HT_CURRENT_CHAPTER)
-    call SaveInteger(ChapterTable, chapterId, HT_CHAPTER_STATE, CHAPTER_STATE_INACTIVE)
-    // StartChapter 内部会先 ResetAllSubsystems 再调用 init 回调
-    call StartChapter(chapterId)
 endfunction
 
 /*
@@ -360,7 +408,7 @@ public function ChapterEnter takes string chapterName, group heroGroup returns n
         call DebugLogger_Log(LOG_ERROR, "[chapter] ChapterEnter: chapter not found: " + chapterName)
         return
     endif
-    call DebugLogger_Log(LOG_INFO, "[chapter] ChapterEnter: starting chapter " + chapterName + " id=" + I2S(chapterId))
+    call DebugLogger_LogKey("[chapter] ChapterEnter: starting chapter " + chapterName + " id=" + I2S(chapterId))
     call StartChapter(chapterId)
     set enterRect = GetActiveEnterRect(chapterId)
     if enterRect == null then
@@ -393,7 +441,70 @@ public function ChapterEnter takes string chapterName, group heroGroup returns n
     set u = null
 endfunction
 
+
+// 推进到下一章：StartChapter + 把英雄组传送到新章入口（生产 BOSS 后调用）
+// 在死亡/回调链内请用 RequestAdvanceChapter（下一帧执行），避免销毁正在执行的触发器。
+public function AdvanceChapter takes group heroGroup returns nothing
+    local integer current = LoadInteger(ChapterTable, 0, HT_CURRENT_CHAPTER)
+    local integer next = current + 1
+    local rect enterRect
+    local real cx
+    local real cy
+    local group tempGroup
+    local unit u
+    if next >= LoadInteger(ChapterTable, 0, HT_CHAPTER_COUNT) then
+        call DebugLogger_Log(LOG_WARN, "[chapter] AdvanceChapter ignored: no next chapter")
+        return
+    endif
+    if ChapterInitTrig[next] == null then
+        call DebugLogger_Log(LOG_WARN, "[chapter] AdvanceChapter aborted: chapter " + I2S(next) + " has no init func")
+        return
+    endif
+    call StartChapter(next)
+    set enterRect = GetActiveEnterRect(next)
+    if enterRect == null then
+        call DebugLogger_Log(LOG_ERROR, "[chapter] AdvanceChapter: enterRect is null")
+        return
+    endif
+    set cx = (GetRectMinX(enterRect) + GetRectMaxX(enterRect)) / 2.0
+    set cy = (GetRectMinY(enterRect) + GetRectMaxY(enterRect)) / 2.0
+    set tempGroup = CreateGroup()
+    call GroupAddGroup(heroGroup, tempGroup)
+    set u = FirstOfGroup(tempGroup)
+    loop
+        exitwhen u == null
+        call AllowPlayerLeaveAreaOnce(GetOwningPlayer(u))
+        call SetUnitPosition(u, cx, cy)
+        call SetPlayerCurrentAreaRect(GetOwningPlayer(u), enterRect)
+        call GroupRemoveUnit(tempGroup, u)
+        set u = FirstOfGroup(tempGroup)
+    endloop
+    call DestroyGroup(tempGroup)
+    set enterRect = null
+    set tempGroup = null
+    set u = null
+endfunction
+
+private function Trig_AdvanceNext takes nothing returns nothing
+    set AdvancePending = false
+    call AdvanceChapter(AdvanceGroup)
+endfunction
+
+// 回调链内安全推进：置待推进标记，下一帧执行 AdvanceChapter
+public function RequestAdvanceChapter takes group heroGroup returns nothing
+    set AdvanceGroup = heroGroup
+    if AdvancePending then
+        return
+    endif
+    set AdvancePending = true
+    if AdvanceTimer == null then
+        set AdvanceTimer = CreateTimer()
+    endif
+    call TimerStart(AdvanceTimer, 0.0, false, function Trig_AdvanceNext)
+endfunction
+
 endlibrary
 #include "nncou\\magic\\map\\area\\config\\forest.j"
 #include "nncou\\magic\\map\\area\\config\\dust.j"
+#include "nncou\\magic\\map\\ui\\gridMap.j"
 #endif

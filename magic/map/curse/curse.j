@@ -18,7 +18,6 @@ globals
     private hashtable CurseTable = InitHashtable()
 
     // 区域诅咒状态（parent key = areaId）
-    private constant integer HT_IS_CURSED = 0
     private constant integer HT_CURSE_TICK = 1
 
     // 全局配置（parent key = 0）
@@ -60,7 +59,8 @@ private function CanCurseArea takes integer areaId returns boolean
     if areaId == GetBossArea() then
         return false
     endif
-    return not LoadBoolean(CurseTable, areaId, HT_IS_CURSED)
+    // 诅咒是逻辑房的独立属性（与生命周期 RoomState 正交）
+    return not AreaIsCursed(areaId)
 endfunction
 
 // 计算诅咒伤害（可覆写以自定义伤害公式）
@@ -78,13 +78,26 @@ endfunction
 
 // ===== 内部：诅咒单个区域 =====
 
+// 派生诅咒房数量（唯一真源 = areaData 的诅咒属性）
+private function CountCursedAreas takes nothing returns integer
+    local integer i = 0
+    local integer count = 0
+    loop
+        exitwhen i >= GetAreaCount()
+        if AreaIsCursed(GetAreaByIndex(i)) then
+            set count = count + 1
+        endif
+        set i = i + 1
+    endloop
+    return count
+endfunction
+
 private function CurseArea takes integer areaId returns nothing
     local integer cursedCount
-    call SaveBoolean(CurseTable, areaId, HT_IS_CURSED, true)
+    // 诅咒是逻辑房属性：写 areaData 独立属性；tick 用于伤害递增
     call SaveInteger(CurseTable, areaId, HT_CURSE_TICK, 0)
-    call SetRoomState(areaId, ROOM_STATE_CURSED)
-    set cursedCount = LoadInteger(CurseTable, 0, HT_CURSED_COUNT) + 1
-    call SaveInteger(CurseTable, 0, HT_CURSED_COUNT, cursedCount)
+    call AreaSetCursed(areaId, true)
+    set cursedCount = CountCursedAreas()
     call OnAreaCursed(areaId)
     // 检查是否全图诅咒
     if cursedCount >= GetAreaCount() - 1 then
@@ -199,7 +212,7 @@ private function Trig_CurseDamage takes nothing returns nothing
     loop
         exitwhen i >= total
         set areaId = GetAreaByIndex(i)
-        if LoadBoolean(CurseTable, areaId, HT_IS_CURSED) then
+        if AreaIsCursed(areaId) then
             // 递增 tick
             call SaveInteger(CurseTable, areaId, HT_CURSE_TICK, LoadInteger(CurseTable, areaId, HT_CURSE_TICK) + 1)
             // 对区域内英雄造成伤害（未绑定物理槽位的逻辑房无玩家，跳过）
@@ -341,7 +354,7 @@ endfunction
     type = integer
 */
 public function IsAreaCursed takes integer areaId returns boolean
-    return LoadBoolean(CurseTable, areaId, HT_IS_CURSED)
+    return AreaIsCursed(areaId)
 endfunction
 
 /*
@@ -352,7 +365,7 @@ endfunction
     returns = integer
 */
 public function GetCursedAreaCount takes nothing returns integer
-    return LoadInteger(CurseTable, 0, HT_CURSED_COUNT)
+    return CountCursedAreas()
 endfunction
 
 /*
@@ -372,7 +385,17 @@ endfunction
 // 重置诅咒系统：停止扩散和伤害，清空所有诅咒状态和配置数据
 // 供 ChapterManager 在关卡切换时调用
 function ResetCurseSystem takes nothing returns nothing
+    local integer i = 0
+    local integer total = GetAreaCount()
     call StopCurseSpread()
+    // 逐房诅咒状态由房间属性（RoomState）承载，随 ResetAreaData 清空；
+    // 这里只清伤害递增 tick，避免新章继承旧章伤害层数
+    loop
+        exitwhen i >= total
+        call FlushChildHashtable(CurseTable, GetAreaByIndex(i))
+        set i = i + 1
+    endloop
+    call SaveInteger(CurseTable, 0, HT_CANDIDATE_COUNT, 0)
     set SpreadCursor = 0
     set DamageTrigger = null
     set CurrentDamagedUnit = null

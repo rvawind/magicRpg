@@ -1,6 +1,7 @@
 #ifndef FOREST_INCLUDED
 #define FOREST_INCLUDED
 #include "nncou\\magic\\map\\area\\core\\grid.j"
+#include "nncou\\magic\\map\\area\\config\\ch1Layouts.j"
 #include "nncou\\magic\\map\\area\\core\\slot.j"
 #include "nncou\\magic\\map\\area\\core\\data.j"
 #include "nncou\\magic\\map\\area\\core\\enter.j"
@@ -14,55 +15,34 @@
 #include "nncou\\magic\\map\\boss\\boss.j"
 #include "nncou\\magic\\map\\timer\\timer.j"
 /*
-    Forest 关卡配置文件（Step 3：7×7 逻辑网格 + 物理槽位池）
-
-    逻辑层：
-    - 7×7 = 49 个逻辑房间，logicalId = row * 7 + col，全部永久存在。
-    - 邻接由随机 DFS 生成树 + 额外边构成，保证全图连通。
-    - 起点从外围 8 个候选（4 角 + 4 边中点）随机选 1 个。
-    - BOSS 逻辑房从内部候选 (2,2)/(3,3)/(4,4) 随机选 1 个。
-
-    物理层（WE 中手工摆放，与逻辑坐标完全无关）：
-    - 4 种地形 × 每地形 5 个普通物理房 = 20 个槽位；
-    - BOSS 中转房也是普通逻辑房，和普通房间一样按地形从这 20 个槽位中分配；
-    - 每个物理房需要 1 个区域矩形（房间活动范围）。
-
-    门洞（出口不在边中点，因此用模板）：
-    - 每种地形画 4 个门洞矩形，放在该地形的第 1 个房间里（A1 / B1 / C1 / D1），
-      精确覆盖实际的 4 个缺口；
-    - 本文件按「模板门洞相对参考房间中心」的偏移，复制到同地形其余 4 个房间；
-    - 前提：同地形的 5 个房间布局与矩形尺寸完全一致。
-
-    闭门障碍物（网格里没有邻居的方向要封住洞口）：
-    - 把该方向的树木/岩石等「可破坏物」摆进对应的门洞模板矩形（A1/B1/C1/D1 内）；
-    - 初始化时 areaExit 读取其类型与相对方位并删除原件，绑定时按逻辑房是否有邻居重建/留空；
-    - 只支持可破坏物（纯装饰物 doodad 触发器读不到）；角度/缩放读不到，重建统一 0°、1.0 缩放、变体随机。
-
-    需要的 WE 区域矩形变量（共 20 + 16 = 36 个）：
-      gg_rct_FR_A1 .. gg_rct_FR_A5     // 地形 0 房间
-      gg_rct_FR_B1 .. gg_rct_FR_B5     // 地形 1 房间
-      gg_rct_FR_C1 .. gg_rct_FR_C5     // 地形 2 房间
-      gg_rct_FR_D1 .. gg_rct_FR_D5     // 地形 3 房间
-      gg_rct_FR_A_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 0 门洞模板（画在 A1 内）
-      gg_rct_FR_B_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 1 门洞模板（画在 B1 内）
-      gg_rct_FR_C_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 2 门洞模板（画在 C1 内）
-      gg_rct_FR_D_DOOR_UP/DOWN/LEFT/RIGHT   // 地形 3 门洞模板（画在 D1 内）
-
-    槽位生命周期：
-    - 进入某逻辑房前由 Area_EnsureBound 分配同地形槽位（优先粘性复用）；
-    - 无玩家且（CLEARED 或 INACTIVE）时由 areaEnter 定时回收；
-    - 槽位池满时只驱逐「无玩家、非 BOSS、非诅咒、CLEARED/INACTIVE」的同地形槽位。
+    Forest = 第一章（2026-11-17 起）
+    - 布局：5 套固定路径变体（A~E，5×4 稀疏、13~14 房、树形边表），每局随机抽一套；
+      可用 Forest_SetForcedLayout(index) 强制指定（测试/调试）。
+    - 路径固定：cell 列表 + 显式边表（Grid_BeginManualEdges/AddEdge/EndManualEdges）。
+    - 房型随机：出生固定为入口；BOSS 从距出生>=6 的房间随机；商店在距离3~5随机；
+      精英在距离5~6随机3~4间；其余普通。N1/N2 由布局结构保证为前两间普通房。
+    - 内容随机：怪物组/掉落按现有系统随机；EXP=杀敌奖励、不由本章节配置发放（归杀怪系统/内容层）。
+    - 物理层仍用 WE 的 20 个物理房（4 地形 × 5），逻辑房按需绑定。
 */
-library Forest initializer InitForestConfig requires areaGrid, areaSlot, areaData, areaEnter, areaExit, areaMonsterRoom, ChapterManager, BossSystem, CurseSystem, ChapterTimer, RewardAltar, RewardItem, DebugLogger
+library Forest initializer InitForestConfig requires ch1Layouts, areaGrid, areaSlot, areaData, areaEnter, areaExit, areaMonsterRoom, ChapterManager, BossSystem, CurseSystem, ChapterTimer, RewardAltar, RewardItem, DebugLogger
 
 globals
     // Forest 关卡 ID（由 RegisterChapter 返回，在 InitForestConfig 中赋值）
     private integer FOREST_CHAPTER_ID = 0
 
-    // 网格尺寸与剪枝概率
-    private constant integer FOREST_ROWS = 7
-    private constant integer FOREST_COLS = 7
-    private constant real FOREST_PRUNE_CHANCE = 0.30
+    // 第一章：5×4 稀疏固定布局（5 套变体，路径固定、房型随机）
+    private constant integer FOREST_BOUND_ROWS = 5
+    private constant integer FOREST_BOUND_COLS = 4
+    // 变体选择：-1=每局随机；>=0=强制指定（测试/调试）
+    private integer ForestForcedLayout = -1
+    // 本次选中的布局与关键房 id（InitForest 计算，Stage2 使用）
+    private integer ForestLayoutIndex = 0
+    private integer ForestActiveChapterId = -1
+    private boolean ForestMonsterGroupsReady = false
+    private integer ForestSpawnId = -1
+    private integer ForestBossId = -1
+    private integer array ForestPickBuf
+    private integer ForestPickCount = 0
 
     // 地形编号（与物理槽位注册顺序一致）
     private constant integer TERRAIN_A = 0
@@ -79,6 +59,9 @@ globals
 
     // 门洞模板：索引 = terrain * 4 + dir，取值为 WE 中画在参考房间里的矩形
     private rect array DoorTemplate
+
+    // 初始化第二阶段用的触发器（懒创建，只用来开一个新线程）
+    private trigger ForestStage2Trig = null
 endglobals
 
 // ===== 物理层：门洞矩形 =====
@@ -279,7 +262,7 @@ private function InitForestPhysicalRooms takes nothing returns nothing
     call Slot_SetReleaseHook(function OnSlotRelease)
     call Slot_SetEvictFilter(function CanEvictRoom)
 
-    call DebugLogger_Log(LOG_INFO, "[forest] physical rooms registered: slots=" + I2S(Slot_GetCount()) + " terrains=" + I2S(Slot_GetTerrainTypeCount()))
+    call DebugLogger_LogKey("[forest] physical rooms registered: slots=" + I2S(Slot_GetCount()) + " terrains=" + I2S(Slot_GetTerrainTypeCount()))
 endfunction
 
 // ===== 怪物组 =====
@@ -319,39 +302,108 @@ endfunction
 
 // ===== 关卡初始化 =====
 
-// Forest 关卡初始化回调，由 ChapterManager.StartChapter 触发
-function InitForest takes nothing returns nothing
+// 初始化第二阶段：入口抽签 → 房间类型 → 守卫/出口 → 怪物房 → 各子系统
+// 单独成一个触发器动作，由 InitForest 用 TriggerExecute 调用：
+// TriggerExecute 会开一个新线程，重置 JASS 单线程字节码预算，同时保持调用是同步的（顺序不变）。
+// 网格坐标方向（用于显式边表：从 a 指向 b 的 4 向方向）
+private function ForestDirBetween takes integer r1, integer c1, integer r2, integer c2 returns integer
+    if r2 == r1 then
+        if c2 > c1 then
+            return DIR_RIGHT
+        endif
+        return DIR_LEFT
+    endif
+    if r2 > r1 then
+        return DIR_DOWN
+    endif
+    return DIR_UP
+endfunction
+
+// 第一章固定布局的随机房型：
+// 出生=ENTRY，BOSS=BOSS；商店在距离3~5随机；精英在距离5~6随机3~4个；其余普通。
+private function AssignForestFixedTypes takes nothing returns nothing
     local integer i = 0
-
-    // 物理房注册只做一次；之后每次进入关卡只重建逻辑数据
-    call InitForestPhysicalRooms()
-
-    // 出生点
-    call ChapterManager_SetVillageRect(gg_rct_Village)
-
-    // 1) 逻辑网格：7×7，随机生成树 + 额外边
-    call Grid_Init(FOREST_ROWS, FOREST_COLS)
-    call Grid_SetPruneChance(FOREST_PRUNE_CHANCE)
-    call Grid_BuildEdges()
-
-    // 2) 注册全部逻辑房间（49 个）
+    local integer id
+    local integer dist
+    local integer eliteCount
+    local integer shopId = -1
+    local integer elitesPicked = 0
+    local integer j
+    // 全部先置普通/入口/BOSS
     loop
         exitwhen i >= Grid_GetTotal()
-        call RegisterArea(i)
+        set id = Grid_GetCellByIndex(i)
+        if id == ForestSpawnId then
+            call SetRoomType(id, ROOM_TYPE_ENTRY)
+        elseif id == ForestBossId then
+            call SetRoomType(id, ROOM_TYPE_BOSS)
+        else
+            call SetRoomType(id, ROOM_TYPE_MONSTER)
+        endif
         set i = i + 1
     endloop
+    // 商店：距离 3~5 的随机一间
+    call Grid_BuildDistanceField(ForestSpawnId)
+    set ForestPickCount = 0
+    set i = 0
+    loop
+        exitwhen i >= Grid_GetTotal()
+        set id = Grid_GetCellByIndex(i)
+        set dist = Grid_GetFieldDistance(id)
+        if id != ForestSpawnId and id != ForestBossId and dist >= 3 and dist <= 5 then
+            set ForestPickBuf[ForestPickCount] = id
+            set ForestPickCount = ForestPickCount + 1
+        endif
+        set i = i + 1
+    endloop
+    if ForestPickCount > 0 then
+        set shopId = ForestPickBuf[GetRandomInt(0, ForestPickCount - 1)]
+        call SetRoomType(shopId, ROOM_TYPE_MERCHANT)
+    endif
+    // 精英：距离 5~6 的随机 3~4 间
+    set ForestPickCount = 0
+    set i = 0
+    loop
+        exitwhen i >= Grid_GetTotal()
+        set id = Grid_GetCellByIndex(i)
+        set dist = Grid_GetFieldDistance(id)
+        if id != ForestSpawnId and id != ForestBossId and id != shopId and dist >= 5 and dist <= 6 then
+            set ForestPickBuf[ForestPickCount] = id
+            set ForestPickCount = ForestPickCount + 1
+        endif
+        set i = i + 1
+    endloop
+    if ForestPickCount > 0 then
+        set eliteCount = GetRandomInt(3, 4)
+        if eliteCount > ForestPickCount then
+            set eliteCount = ForestPickCount
+        endif
+        set i = ForestPickCount - 1
+        loop
+            exitwhen i <= 0
+            set j = GetRandomInt(0, i)
+            set id = ForestPickBuf[i]
+            set ForestPickBuf[i] = ForestPickBuf[j]
+            set ForestPickBuf[j] = id
+            set i = i - 1
+        endloop
+        loop
+            exitwhen elitesPicked >= eliteCount
+            call SetRoomType(ForestPickBuf[elitesPicked], ROOM_TYPE_ELITE)
+            set elitesPicked = elitesPicked + 1
+        endloop
+    endif
+endfunction
 
-    // 3) 起点候选：外围 8 个（4 角 + 4 边中点）
-    call AreaAddPeripheralEnters()
+// 测试/调试：强制指定布局 index（-1=随机）
+public function SetForcedLayout takes integer index returns nothing
+    set ForestForcedLayout = index
+endfunction
 
-    // 4) BOSS 候选：内部坐标（避免开局贴着外围入口）
-    call AreaAddBossCandidate(Grid_GetId(2, 2))
-    call AreaAddBossCandidate(Grid_GetId(3, 3))
-    call AreaAddBossCandidate(Grid_GetId(4, 4))
-    call RollBossArea()
-
-    // 5) 随机确定本关入口（排除 BOSS 房）
-    call RollActiveEnter(FOREST_CHAPTER_ID)
+private function InitForestStage2 takes nothing returns nothing
+    // 5) 随机确定本关入口（排除 BOSS 房，并满足入口→BOSS 最小图距离）
+    call AreaSetEntryBossMinDistance(0)
+    call RollActiveEnter(ForestActiveChapterId)
 
     // 6) 房间类型权重配置
     call RegisterRoomType(ROOM_TYPE_MONSTER, 30, ROOM_MAX_UNLIMITED)
@@ -361,8 +413,9 @@ function InitForest takes nothing returns nothing
     call RegisterRoomType(ROOM_TYPE_ELITE, 1, 2)
     call SetRoomTypeWeight(ROOM_TYPE_ELITE, 100)
 
-    // 7) 执行房间类型/地形分配（仅本次激活入口为入口房）
-    call InitAreaWithEnter(FOREST_CHAPTER_ID)
+    // 7) 先按通用流程分配地形/基础类型，再按第一章约束覆盖随机房型
+    call InitAreaWithEnter(ForestActiveChapterId)
+    call AssignForestFixedTypes()
 
     // 8) 物理槽位常驻触发器（必须在物理房注册之后）
     //    BOSS 中转房不预绑定：它和普通逻辑房一样，玩家接近时才分配物理槽位
@@ -370,7 +423,11 @@ function InitForest takes nothing returns nothing
     call InitAreaExits()
 
     // 9) 怪物组与怪物房（必须在 InitAreaWithEnter 之后）
-    call InitForestMonsterGroups()
+    //    怪物组表只增不减：只在本局第一次初始化时建，跨章复用
+    if not ForestMonsterGroupsReady then
+        set ForestMonsterGroupsReady = true
+        call InitForestMonsterGroups()
+    endif
     call InitMonsterRoom()
 
     /*
@@ -400,7 +457,106 @@ function InitForest takes nothing returns nothing
     // 祭坛配置（单位类型ID在WE中配置，商店上架物品由物体编辑器配置）
     call RewardAltar_SetAltarUnitTypeId('n000')  // 祭坛单位类型ID
 
-    call DebugLogger_Log(LOG_INFO, "[forest] InitForest done: chapter=" + I2S(FOREST_CHAPTER_ID) + " enter=" + GetAreaIdName(GetActiveEnter(FOREST_CHAPTER_ID)) + " boss=" + GetAreaIdName(GetBossArea()) + " slots=" + I2S(Slot_GetCount()))
+    call DebugLogger_LogKey("[forest] InitForest done: chapter=" + I2S(ForestActiveChapterId) + " enter=" + GetAreaIdName(GetActiveEnter(FOREST_CHAPTER_ID)) + " boss=" + GetAreaIdName(GetBossArea()) + " slots=" + I2S(Slot_GetCount()))
+endfunction
+
+// Forest 关卡初始化回调，由 ChapterManager.StartChapter 触发
+// 分两段线程执行，避免初始化单线程超过 JASS 字节码上限：
+//   第一段：物理房注册 + 网格生成 + 逻辑房注册 + BOSS 抽签
+//   第二段：InitForestStage2（TriggerExecute 新线程）
+private function InitForestBody takes nothing returns nothing
+    local integer i = 0
+
+    // 物理房注册只做一次；之后每次进入关卡只重建逻辑数据
+    call InitForestPhysicalRooms()
+
+    // 出生点
+    call ChapterManager_SetVillageRect(gg_rct_Village)
+
+    // 1) 选一套固定路径布局（A~E），建立稀疏网格与显式边表
+    if ForestForcedLayout >= 0 and ForestForcedLayout < ch1Layouts_GetLayoutCount() then
+        set ForestLayoutIndex = ForestForcedLayout
+    else
+        set ForestLayoutIndex = GetRandomInt(0, ch1Layouts_GetLayoutCount() - 1)
+    endif
+    call Grid_InitBounds(FOREST_BOUND_ROWS, FOREST_BOUND_COLS)
+    set i = 0
+    loop
+        exitwhen i >= ch1Layouts_GetLayoutCellCount(ForestLayoutIndex)
+        call Grid_AddCell(ch1Layouts_GetLayoutCellRow(ForestLayoutIndex, i), ch1Layouts_GetLayoutCellCol(ForestLayoutIndex, i))
+        set i = i + 1
+    endloop
+    call Grid_BeginManualEdges()
+    set i = 0
+    loop
+        exitwhen i >= ch1Layouts_GetLayoutEdgeCount(ForestLayoutIndex)
+        call Grid_AddEdge(Grid_GetIdIfPresent(ch1Layouts_GetLayoutEdgeARow(ForestLayoutIndex, i), ch1Layouts_GetLayoutEdgeACol(ForestLayoutIndex, i)), ForestDirBetween(ch1Layouts_GetLayoutEdgeARow(ForestLayoutIndex, i), ch1Layouts_GetLayoutEdgeACol(ForestLayoutIndex, i), ch1Layouts_GetLayoutEdgeBRow(ForestLayoutIndex, i), ch1Layouts_GetLayoutEdgeBCol(ForestLayoutIndex, i)))
+        set i = i + 1
+    endloop
+    call Grid_EndManualEdges()
+
+    // 2) 注册全部逻辑房间（B11：遍历存在格列表）
+    set i = 0
+    loop
+        exitwhen i >= Grid_GetTotal()
+        call RegisterArea(Grid_GetCellByIndex(i))
+        set i = i + 1
+    endloop
+
+    // 3) 出生房 = 布局中的 spawn cell；只把它作为入口候选
+    set i = 0
+    loop
+        exitwhen i >= ch1Layouts_GetLayoutCellCount(ForestLayoutIndex)
+        if ch1Layouts_GetLayoutCellType(ForestLayoutIndex, i) == 0 then
+            set ForestSpawnId = Grid_GetIdIfPresent(ch1Layouts_GetLayoutCellRow(ForestLayoutIndex, i), ch1Layouts_GetLayoutCellCol(ForestLayoutIndex, i))
+        endif
+        set i = i + 1
+    endloop
+    call AreaAddEnter(ForestSpawnId)
+
+    // 4) BOSS = 距出生 ≥6 的随机房间（布局保证至少一个）
+    call Grid_BuildDistanceField(ForestSpawnId)
+    set ForestPickCount = 0
+    set i = 0
+    loop
+        exitwhen i >= Grid_GetTotal()
+        if Grid_GetFieldDistance(Grid_GetCellByIndex(i)) >= 6 then
+            set ForestPickBuf[ForestPickCount] = Grid_GetCellByIndex(i)
+            set ForestPickCount = ForestPickCount + 1
+        endif
+        set i = i + 1
+    endloop
+    if ForestPickCount > 0 then
+        set ForestBossId = ForestPickBuf[GetRandomInt(0, ForestPickCount - 1)]
+    else
+        set ForestBossId = Grid_GetCellByIndex(Grid_GetTotal() - 1)
+    endif
+    call AreaSetBossroom(ForestBossId)
+    set ForestPickCount = 0
+
+    // 5) 其余初始化在独立线程里继续（TriggerExecute 同步执行，顺序不变）
+    if ForestStage2Trig == null then
+        set ForestStage2Trig = CreateTrigger()
+        call TriggerAddAction(ForestStage2Trig, function InitForestStage2)
+    endif
+    call TriggerExecute(ForestStage2Trig)
+endfunction
+
+// 生产入口：签名保持不变
+function InitForest takes nothing returns nothing
+    set ForestActiveChapterId = FOREST_CHAPTER_ID
+    call InitForestBody()
+endfunction
+
+// 测试/未来章节复用入口：把本章数据写到指定 chapterId 下
+public function InitForestChapter takes integer chapterId returns nothing
+    set ForestActiveChapterId = chapterId
+    call InitForestBody()
+endfunction
+
+// 本局实际使用的布局编号（0..4）
+public function GetLayoutIndex takes nothing returns integer
+    return ForestLayoutIndex
 endfunction
 
 // Forest 关卡配置注册：在游戏初始化时调用

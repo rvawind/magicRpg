@@ -4,12 +4,14 @@
 /*
     紧急穿越技能模块（共通技能）
 
-    所有英雄共用的「紧急穿越」技能：未清房时站上方向矩形（出口矩形）使用技能，
-    强行激活单条路线，瞬时传送到对应相邻房间，绕过「必须清房」的限制。
+    Step 3.6 起，**门洞传送只通过这个技能触发**（走进门洞不再传送）。
+    站进方向矩形（出口矩形附近）施法 → 瞬时传送到该方向的相邻房间。
 
     代价机制：
-    - 当前生命 >= 30%：扣除当前生命 20%
-    - 当前生命 < 30%（濒死）：免费，但进入 10 秒冷却
+    - 源房已可通行（安全/入口/BOSS 中转房/已清空）：免费，不扣血、不进冷却；
+    - 源房未清空（紧急穿越）：
+        当前生命 >= 30%：扣除当前生命 20%，冷却 3 秒
+        当前生命 < 30%（濒死）：免费，但冷却 10 秒
 
     依赖：areaData, areaEnter, areaExit, areaSlot, DebugLogger
 */
@@ -118,6 +120,7 @@ private function Trig_EmergencyCast takes nothing returns nothing
     local rect curRect
     local integer dir
     local real cd
+    local boolean freeTraverse
     // 仅处理共通紧急穿越技能
     if GetSpellAbilityId() != EMERGENCY_ABILITY_ID then
         // 诊断：确认施法事件已触发，以及实际技能ID与配置期望值是否一致
@@ -131,13 +134,7 @@ private function Trig_EmergencyCast takes nothing returns nothing
     endif
     set p = GetOwningPlayer(u)
     set pid = GetPlayerId(p)
-    // 冷却检查
-    if LoadReal(EmergencyTable, pid, HT_COOLDOWN) > 0.0 then
-        call DebugLogger_Log(LOG_TRACE, "[emergency] cooldown active, skip pid=" + I2S(pid))
-        set u = null
-        set p = null
-        return
-    endif
+    // 冷却检查放在「确定源房是否已清空」之后：已清空房间的免费传送不受冷却限制
     // 定位玩家当前区域
     set curRect = GetPlayerCurrentAreaRect(p)
     set sourceAreaId = GetAreaIdByRect(curRect)
@@ -164,11 +161,24 @@ private function Trig_EmergencyCast takes nothing returns nothing
         set p = null
         return
     endif
+    // 源房已可通行时免费传送（清房后的正常移动）；未清空才按紧急穿越结算代价
+    set freeTraverse = IsSourceTraversable(sourceAreaId)
+    if not freeTraverse and LoadReal(EmergencyTable, pid, HT_COOLDOWN) > 0.0 then
+        call DebugLogger_Log(LOG_TRACE, "[emergency] cooldown active, skip pid=" + I2S(pid))
+        set curRect = null
+        set u = null
+        set p = null
+        return
+    endif
     // 先尝试传送；成功后才扣代价并进入冷却（目标槽位分配失败时不惩罚玩家）
     if TryTraverse(u, sourceAreaId, dir, true) then
-        set cd = ApplyEmergencyCost(u)
-        call SetEmergencyCooldown(p, cd)
-        call DebugLogger_Log(LOG_INFO, "[emergency] traverse " + GetAreaIdName(sourceAreaId) + " dir=" + I2S(dir) + " -> " + GetAreaIdName(Grid_GetNeighbor(sourceAreaId, dir)) + " cd=" + R2S(cd))
+        if freeTraverse then
+            call DebugLogger_LogKey("[emergency] free traverse " + GetAreaIdName(sourceAreaId) + " dir=" + I2S(dir) + " -> " + GetAreaIdName(Grid_GetNeighbor(sourceAreaId, dir)))
+        else
+            set cd = ApplyEmergencyCost(u)
+            call SetEmergencyCooldown(p, cd)
+            call DebugLogger_LogKey("[emergency] traverse " + GetAreaIdName(sourceAreaId) + " dir=" + I2S(dir) + " -> " + GetAreaIdName(Grid_GetNeighbor(sourceAreaId, dir)) + " cd=" + R2S(cd))
+        endif
     else
         call DebugLogger_Log(LOG_TRACE, "[emergency] traverse failed, source=" + GetAreaIdName(sourceAreaId) + " dir=" + I2S(dir))
     endif
