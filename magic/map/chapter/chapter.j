@@ -60,6 +60,7 @@ globals
 
     // 全通/推进状态
     private trigger AllCompleteTrig = null
+    private trigger ChapterStartHookTrig = null
     private boolean AllCompleteFired = false
     private timer AdvanceTimer = null
     private boolean AdvancePending = false
@@ -262,6 +263,21 @@ public function SetChapterTime takes integer chapterId, integer seconds returns 
 endfunction
 
 /*
+    [ChapterManager_RegisterChapterStartCallback]
+    title = "注册章节开始回调"
+    description = "章节初始化完成后执行${回调}；用于 UI 按当前章节地图重建"
+    category = TC_FRO
+    [[.args]]
+    type = code
+*/
+public function RegisterChapterStartCallback takes code cb returns nothing
+    if ChapterStartHookTrig == null then
+        set ChapterStartHookTrig = CreateTrigger()
+    endif
+    call TriggerAddAction(ChapterStartHookTrig, cb)
+endfunction
+
+/*
     [ChapterManager_StartChapter]
     title = "开始关卡"
     description = "开始${指定ID}的关卡"
@@ -290,6 +306,10 @@ public function StartChapter takes integer chapterId returns nothing
     call ChapterTimer_StartChapterTimer()
     // 触发钩子
     call OnChapterStart(chapterId)
+    // 章节开始回调（UI 等按当前 grid 建动态内容；不依赖轮询/超时）
+    if ChapterStartHookTrig != null then
+        call TriggerExecute(ChapterStartHookTrig)
+    endif
 endfunction
 
 /*

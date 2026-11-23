@@ -150,7 +150,7 @@ globals
 
     private constant real INIT_RETRY_INTERVAL = 1.0
     private constant real REFRESH_INTERVAL = 0.5
-    private constant integer INIT_MAX_ATTEMPTS = 30
+    private constant integer INIT_MAX_ATTEMPTS = 600
     private constant integer DIAG_MAX_LEN = 300
 
     // ===== frames =====
@@ -542,18 +542,42 @@ private function CreateTextFrame takes string name, integer parent, string text,
     return f
 endfunction
 
-// 诊断：把 UI 在"当前窗口分辨率"下的实际像素矩形打进日志，供截图核对使用
-// （替代从截图猜面板位置；见 magic/UI设计规范.md §10.1）
-private function LogRects takes nothing returns nothing
-    local integer w = DzGetWindowWidth()
-    local integer h = DzGetWindowHeight()
-    local integer rootL
-    local integer rootT
-    local integer rootW = R2I(ROOT_W * w / 0.8)
-    local integer rootH = R2I(ROOT_H * h / 0.6)
-    set rootL = w / 2 - rootW / 2
-    set rootT = h / 2 - R2I(ROOT_CENTER_Y * h / 0.6) - rootH / 2
-    call DebugLogger_Log(LOG_INFO, "[gridmap] rects win=" + I2S(w) + "x" + I2S(h) + " root=" + I2S(rootL) + "," + I2S(rootT) + "," + I2S(rootW) + "," + I2S(rootH) + " grid=" + I2S(rootL + R2I(GRID_AREA_X * w / 0.8)) + "," + I2S(rootT + R2I(GRID_AREA_Y * h / 0.6)) + "," + I2S(R2I(GRID_AREA_W * w / 0.8)) + "," + I2S(R2I(GRID_AREA_H * h / 0.6)) + " info=" + I2S(rootL + R2I(RIGHT_X * w / 0.8)) + "," + I2S(rootT + R2I(INFO_Y * h / 0.6)) + "," + I2S(R2I(INFO_W * w / 0.8)) + "," + I2S(R2I(INFO_H * h / 0.6)) + " safe=" + I2S(rootL + 32 * w / 1100) + "," + I2S(rootT + 25 * h / 568) + "," + I2S(rootL + 626 * w / 1100) + "," + I2S(rootT + 331 * h / 568))
+// 窗口矩形诊断（原 LogRects）已删除，勿加回：
+// DzGetWindowWidth/Height 在 UI 初始化时机触发 Game.dll 崩溃（0xc0000409），
+// 详见 magic/fixes/2026-11-23-ui-logrects-crash.md。
+
+// 静态壳：地图加载时创建纸面/标题/关闭提示，不依赖章节 grid
+private function CreateShell takes nothing returns nothing
+    if Root != 0 then
+        return
+    endif
+    set Root = CreateTexFrame("GridMapShell", DzGetGameUI(), TEX_PAPER, ROOT_W, ROOT_H)
+    if Root == 0 then
+        return
+    endif
+    call DzFrameSetPoint(Root, 4, DzGetGameUI(), 4, 0.0, ROOT_CENTER_Y)
+    set TitleText = CreateTextFrame("GridTitle", Root, "关卡地图", 0.24, 0.034, FS_TITLE, COLOR_DARK)
+    if TitleText != 0 then
+        call DzFrameSetPoint(TitleText, 0, Root, 0, TITLE_X, -TITLE_Y)
+    endif
+    set CloseText = CreateTextFrame("GridClose", Root, "~ 关闭", 0.09, 0.028, FS_CLOSE, COLOR_MUTED)
+    if CloseText != 0 then
+        call DzFrameSetPoint(CloseText, 0, Root, 0, CLOSE_X, -CLOSE_Y)
+    endif
+    set uiVisible = false
+    call DzFrameShow(Root, false)
+    call Diag("shell")
+endfunction
+
+private function DestroyShell takes nothing returns nothing
+    if Root != 0 then
+        call DzFrameShow(Root, false)
+        call DzDestroyFrame(Root)
+        set Root = 0
+    endif
+    set TitleText = 0
+    set CloseText = 0
+    set uiVisible = false
 endfunction
 
 private function CreateUi takes nothing returns nothing
@@ -663,7 +687,8 @@ private function CreateUi takes nothing returns nothing
             endif
             set CellFrame[id] = f
             set CellTexCache[id] = -1
-            // 诅咒覆盖层：独立于房型/生命周期，仅“已揭示且 IsAreaCursed”显示
+            // 诅咒覆盖层：建在格底之后、道路/徽记之前（z 序见 UI设计规范 v1.7；
+            // 若改为事后按需创建，覆盖层会盖到红环/蜡封/金印/队友标记之上）
             set f = CreateTexFrame("GridCursed" + I2S(id), Root, TEX_CURSED, CellW, CellH)
             if f != 0 then
                 call DzFrameSetPoint(f, 0, Root, 0, CellLeft(col), -CellTop(row))
@@ -675,7 +700,6 @@ private function CreateUi takes nothing returns nothing
         set i = i + 1
     endloop
     call Diag("cells" + I2S(cellCount))
-
     // 道路（v1.6：节点之后再建，z 在节点之上、徽记之下；每真实边 1 帧）
     set RoadCount = 0
     set i = 0
@@ -791,8 +815,6 @@ private function CreateUi takes nothing returns nothing
         set HoverBtn[id] = f
         set i = i + 1
     endloop
-    call Diag("buttons")
-
     // 信息卡
     set InfoCard = CreateTexFrame("GridInfoCard", Root, TEX_CARD_INFO, INFO_W, INFO_H)
     if InfoCard != 0 then
@@ -935,13 +957,12 @@ private function CreateUi takes nothing returns nothing
     call UpdateTitle(LastChapterId)
     call ShowInfoDefault()
     call DebugLogger_Log(LOG_INFO, "[gridmap] B ingame UI ready: roads=" + I2S(RoadCount) + " terrain=" + I2S(TerrainCount))
-    call LogRects()
 endfunction
 
 private function ApplyVisible takes boolean vis returns nothing
     local integer i = 0
     local integer id
-    if not uiReady then
+    if Root == 0 then
         return
     endif
     set uiVisible = vis
@@ -1086,6 +1107,32 @@ private function RebuildUi takes nothing returns nothing
         // 切章前面板是打开的就保持打开（默认 false 时仍是关闭）
         call ApplyVisible(wasVisible)
         call Diag("rebuild")
+    endif
+endfunction
+
+// 章节开始后构建完整 UI（若已有完整 UI 则按新章重建）
+private function BuildFullUi takes boolean show returns nothing
+    local boolean wasVisible = uiVisible
+    if Root != 0 and not uiReady then
+        call DestroyShell()
+    endif
+    call CreateUi()
+    if uiReady then
+        if show then
+            call ApplyVisible(true)
+        elseif wasVisible then
+            call ApplyVisible(true)
+        else
+            call ApplyVisible(false)
+        endif
+    endif
+endfunction
+
+private function GridMapOnChapterStart takes nothing returns nothing
+    if uiReady then
+        call RebuildUi()
+    else
+        call BuildFullUi(uiVisible)
     endif
 endfunction
 
@@ -1311,6 +1358,18 @@ private function OnToggleKeyDown takes nothing returns nothing
         else
             call ApplyVisible(true)
         endif
+        return
+    endif
+    // 章节已就绪：按 ~ 时补建完整 UI 并打开；章节未开始：打开静态壳
+    if not uiCreating and Grid_GetRows() > 0 then
+        call BuildFullUi(true)
+        call Diag("key-build")
+    elseif Root != 0 then
+        if uiVisible then
+            call ApplyVisible(false)
+        else
+            call ApplyVisible(true)
+        endif
     endif
 endfunction
 
@@ -1328,6 +1387,8 @@ private function InitGridMap takes nothing returns nothing
     call TriggerAddAction(tUp, function OnToggleKeyUp)
     call DzTriggerRegisterKeyEventTrg(tDown, KEY_EVENT_DOWN, KEY_TOGGLE)
     call DzTriggerRegisterKeyEventTrg(tUp, KEY_EVENT_UP, KEY_TOGGLE)
+    // 章节开始即按当前 grid 建/重建完整 UI（不等轮询）
+    call ChapterManager_RegisterChapterStartCallback(function GridMapOnChapterStart)
     set initTimer = CreateTimer()
     call TimerStart(initTimer, INIT_RETRY_INTERVAL, true, function OnInitTick)
     set refreshTimer = CreateTimer()
@@ -1346,13 +1407,13 @@ public function Toggle takes nothing returns nothing
 endfunction
 
 public function Show takes nothing returns nothing
-    if uiReady then
+    if Root != 0 then
         call ApplyVisible(true)
     endif
 endfunction
 
 public function Hide takes nothing returns nothing
-    if uiReady then
+    if Root != 0 then
         call ApplyVisible(false)
     endif
 endfunction

@@ -242,13 +242,28 @@ try {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $got = $false
+    $crashed = $false
     $war3Focused = $false
+    $war3Seen = $false
     $shots = New-Object System.Collections.ArrayList
     $lastShotAt = Get-Date
     $shotCount = 0
 
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 1
+        # 每 1s 检查 war3 进程；加载完成后进程消失且无报告 = 闪退，立即结束，不空等 timeout
+        $w3Now = Get-War3Process
+        if ($w3Now) { $war3Seen = $true }
+        if ($war3Seen -and -not $w3Now -and -not (Test-Path -LiteralPath $report)) {
+            $crashed = $true
+            Write-Host ("[run] war3 exited early after {0:N1}s (no report)" -f ((Get-Date) - $start).TotalSeconds)
+            break
+        }
+        if (-not $war3Seen -and ((Get-Date) - $start).TotalSeconds -ge 30) {
+            $crashed = $true
+            Write-Host '[run] war3 process never appeared (30s)'
+            break
+        }
         $loadingDone = (Test-Path -LiteralPath $bootFile) -and ((Get-Item -LiteralPath $bootFile).LastWriteTime -gt $start)
         if (-not $loadingDone) {
             $null = Move-FocusAway
@@ -271,7 +286,7 @@ try {
         }
         if (Test-Path -LiteralPath $report) { $got = $true; break }
     }
-    if (-not $got) {
+    if (-not $got -and -not $crashed) {
         $grace = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $grace) {
             Start-Sleep -Milliseconds 500
@@ -282,13 +297,17 @@ try {
             if ($p) { [void]$shots.Add($p) }
         }
     }
+    if ($crashed) {
+        $p = Capture-GameShot 'crash'
+        if ($p) { [void]$shots.Add($p) }
+    }
     $result.screens = @($shots)
     $result.elapsedSec = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
 
     if (-not $got) {
         $w3 = Get-War3Process
         $anomaly = [ordered]@{
-            kind                  = 'TIMEOUT'
+            kind                  = $(if ($crashed) { 'CRASH' } else { 'TIMEOUT' })
             war3Exists            = [bool]$w3
             war3Id                = $(if ($w3) { $w3.Id } else { 0 })
             war3Responding        = $(if ($w3) { $w3.Responding } else { $false })
@@ -305,8 +324,8 @@ try {
         $result.anomaly = $anomaly
         Write-Host '[run] anomaly:'
         foreach ($k in $anomaly.Keys) { Write-Host ("  {0} = {1}" -f $k, $anomaly[$k]) }
-        Write-Host '[run] RESULT: TIMEOUT'
-        $result.result = 'TIMEOUT'
+        Write-Host $(if ($crashed) { '[run] RESULT: CRASH' } else { '[run] RESULT: TIMEOUT' })
+        $result.result = $(if ($crashed) { 'CRASH' } else { 'TIMEOUT' })
         $exit = 3
     } else {
         $bytes = $null
