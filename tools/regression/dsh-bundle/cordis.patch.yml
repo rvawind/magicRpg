@@ -1,0 +1,14 @@
+- insert:
+    - id: wc3-regression-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: wc3regress
+        transport: stdio
+        command: 'C:\Users\admin\AppData\Local\Programs\Python\Python310\python.exe'
+        args:
+          - 'C:\Users\admin\Documents\WE\magic-core\tools\regression\mcp_server.py'
+        cwd: 'C:\Users\admin\Documents\WE\magic-core'
+        failOnStartupError: false
+        toolCallTimeoutMs: 299000
+        env:
+          DSH_WC3REG_LAUNCHER: 'dsh-mcp-client'

@@ -3,3 +3,9 @@
 *.w3x
 tools/precompile_check/out/
 __pycache__/
+
+# 生成物与本地产出（不入库）
+/dist/
+/generated-images/
+/testmaps/
+/.doc-health.json

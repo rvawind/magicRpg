@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WC3 regression runner",
+    "description": "Builds test-only WC3 maps and runs the in-game regression suite on the H drive Warcraft III install."
+  }
+}

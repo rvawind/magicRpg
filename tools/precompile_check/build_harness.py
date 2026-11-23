@@ -18,7 +18,7 @@ import re
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(BASE, 'out')
 PROJ = os.path.abspath(os.path.join(BASE, '..', '..'))
-SRC = r"C:/Users/admin/Documents/WE/KKWE_nncouVer1.5.7.1/logs/inputwar3map.j"
+SRC = os.environ.get('HARNESS_SRC') or r"C:/Users/admin/Documents/WE/KKWE_nncouVer1.5.7.1/logs/inputwar3map.j"
 
 if not os.path.isdir(OUT):
     os.makedirs(OUT)
@@ -76,7 +76,11 @@ else:
     print('note: using gg_rct_FR_* definitions from map script')
 
 # 3) 未改动的旧库：直接取地图脚本里的编译结果
+prefix_text = ''.join(prefix)
 for name in ['MonsterGroup', 'ChapterTimer', 'BzAPI', 'UiPick', 'YDWEAbilityState', 'RewardItem']:
+    if re.search(r'(?m)^library\s+%s\b' % re.escape(name), prefix_text):
+        print('note: %s already in prefix, skipped' % name)
+        continue
     a, b = find_lib(name)
     parts.append(''.join(lines[a:b + 1]))
 
@@ -90,12 +94,16 @@ SOURCES = [
     'magic/map/area/core/exit.j',
     'magic/map/area/core/monster_room.j',
     'magic/map/area/core/emergency.j',
+    'magic/map/reveal/reveal.j',
     'magic/map/curse/curse.j',
     'magic/map/boss/boss.j',
     'magic/map/reward/altar.j',
     'magic/map/chapter/chapter.j',
+    'magic/map/debug/area_probe.j',
+    'magic/map/area/config/ch1Layouts.j',
     'magic/map/area/config/forest.j',
     'magic/map/area/config/dust.j',
+    'magic/map/ui/gridMap.j',
 ]
 for rel in SOURCES:
     parts.append('\n// ===== FILE: %s =====\n' % rel)
